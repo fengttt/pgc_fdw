@@ -480,17 +480,26 @@ begin_remote_xact(ConnCacheEntry *entry)
 	/* Start main transaction if we haven't yet */
 	if (entry->xact_depth <= 0)
 	{
-		const char *sql;
-
+		const char *sql = 0;
 		elog(DEBUG3, "starting remote transaction on connection %p",
 			 entry->conn);
 
 		if (IsolationIsSerializable())
 			sql = "START TRANSACTION ISOLATION LEVEL SERIALIZABLE";
+#if 0
+		/* 
+		 * There is no reason to force repeatable read if current level
+		 * is read commited.   If current level is read commited, what
+		 * we should do, is debatable, but let's take the lazy approach
+		 * here.
+		 */
 		else
 			sql = "START TRANSACTION ISOLATION LEVEL REPEATABLE READ";
+#endif
 		entry->changing_xact_state = true;
-		do_sql_command(entry->conn, sql);
+		if (sql) {
+			do_sql_command(entry->conn, sql);
+		}
 		entry->xact_depth = 1;
 		entry->changing_xact_state = false;
 	}
