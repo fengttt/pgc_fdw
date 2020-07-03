@@ -146,7 +146,7 @@ pgc_fdw_validator(PG_FUNCTION_ARGS)
 		else if (strcmp(def->defname, "cache_timeout") == 0) 
 		{
 			int cache_timeout;
-			cache_timeout = strtol(defGetString(def), NULL, 3600);
+			cache_timeout = strtol(defGetString(def), NULL, 10);
 			if (cache_timeout < 0) {
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),

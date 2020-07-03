@@ -1370,8 +1370,7 @@ postgresGetForeignPlan(PlannerInfo *root,
 	fdw_private = list_make4(makeString(sql.data),
 							 retrieved_attrs,
 							 makeInteger(fpinfo->fetch_size),
-							 makeInteger(fpinfo->cache_timeout),
-							 );
+							 makeInteger(fpinfo->cache_timeout));
 	if (IS_JOIN_REL(foreignrel) || IS_UPPER_REL(foreignrel))
 		fdw_private = lappend(fdw_private,
 							  makeString(fpinfo->relation_name));
@@ -5355,7 +5354,7 @@ apply_server_options(PgFdwRelationInfo *fpinfo)
 		else if (strcmp(def->defname, "fetch_size") == 0)
 			fpinfo->fetch_size = strtol(defGetString(def), NULL, 10);
 		else if (strcmp(def->defname, "cache_timeout") == 0)
-			fpinfo->cache_timeout = (defGetString(def), NULL, 10);
+			fpinfo->cache_timeout = strtol(defGetString(def), NULL, 10);
 	}
 }
 
