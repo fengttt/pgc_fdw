@@ -8,6 +8,13 @@ to pgc fdw so that user can use/load two extensions at the same time.
 Build
 ========================
 
+Requirement
+-----------
+1. Install all requirements need to build postgres.   configure, make, make install
+2. Install foundationdb server and client
+
+Build
+-------
 The easist way to build fdw is just put this dir in postgresql/contrib and
 run make.
 

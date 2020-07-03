@@ -45,7 +45,19 @@
 #include "utils/sampling.h"
 #include "utils/selfuncs.h"
 
+#include "cache.h"
+
 PG_MODULE_MAGIC;
+
+void _PG_init(void)
+{
+	pgcache_init();
+}
+
+void _PG_fini(void)
+{
+	pgcache_fini();
+}
 
 /* Default CPU cost to start up a foreign query. */
 #define DEFAULT_FDW_STARTUP_COST	100.0
@@ -71,6 +83,9 @@ enum FdwScanPrivateIndex
 	FdwScanPrivateRetrievedAttrs,
 	/* Integer representing the desired fetch_size */
 	FdwScanPrivateFetchSize,
+	
+	/* Cache timeout: */
+	FdwScanPrivateCacheTimeout,
 
 	/*
 	 * String describing join i.e. names of relations being joined and types
@@ -159,7 +174,14 @@ typedef struct PgFdwScanState
 	MemoryContext temp_cxt;		/* context for per-tuple temporary data */
 
 	int			fetch_size;		/* number of tuples per fetch */
+
+	/* pgc cache info */
+	int cache_timeout;
+	qry_key_t cache_qk;
+	/* reuse num_tuple and next_tuple */
+
 } PgFdwScanState;
+
 
 /*
  * Execution state of a foreign insert/update/delete operation.
@@ -419,6 +441,8 @@ static bool ec_member_matches_foreign(PlannerInfo *root, RelOptInfo *rel,
 									  EquivalenceClass *ec, EquivalenceMember *em,
 									  void *arg);
 static void create_cursor(ForeignScanState *node);
+static void cache_create_cursor(ForeignScanState *node);
+
 static void fetch_more_data(ForeignScanState *node);
 static void close_cursor(PGconn *conn, unsigned int cursor_number);
 static PgFdwModifyState *create_foreign_modify(EState *estate,
@@ -600,6 +624,7 @@ postgresGetForeignRelSize(PlannerInfo *root,
 	fpinfo->fdw_tuple_cost = DEFAULT_FDW_TUPLE_COST;
 	fpinfo->shippable_extensions = NIL;
 	fpinfo->fetch_size = 100;
+	fpinfo->cache_timeout = 3600;
 
 	apply_server_options(fpinfo);
 	apply_table_options(fpinfo);
@@ -1360,9 +1385,10 @@ postgresGetForeignPlan(PlannerInfo *root,
 	 * Build the fdw_private list that will be available to the executor.
 	 * Items in the list must match order in enum FdwScanPrivateIndex.
 	 */
-	fdw_private = list_make3(makeString(sql.data),
+	fdw_private = list_make4(makeString(sql.data),
 							 retrieved_attrs,
-							 makeInteger(fpinfo->fetch_size));
+							 makeInteger(fpinfo->fetch_size),
+							 makeInteger(fpinfo->cache_timeout));
 	if (IS_JOIN_REL(foreignrel) || IS_UPPER_REL(foreignrel))
 		fdw_private = lappend(fdw_private,
 							  makeString(fpinfo->relation_name));
@@ -1447,6 +1473,8 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 												 FdwScanPrivateRetrievedAttrs);
 	fsstate->fetch_size = intVal(list_nth(fsplan->fdw_private,
 										  FdwScanPrivateFetchSize));
+	fsstate->cache_timeout = intVal(list_nth(fsplan->fdw_private, FdwScanPrivateCacheTimeout));
+
 
 	/* Create contexts for batches of tuples and per-tuple temp workspace. */
 	fsstate->batch_cxt = AllocSetContextCreate(estate->es_query_cxt,
@@ -1543,6 +1571,16 @@ postgresReScanForeignScan(ForeignScanState *node)
 	if (!fsstate->cursor_exists)
 		return;
 
+	if (fsstate->cache_timeout > 0) {
+		/* force reopen a cursor. */
+		fsstate->num_tuples = 0;
+		fsstate->next_tuple = 0;
+		fsstate->eof_reached = false;
+		fsstate->cursor_exists = false;
+		return;
+	}
+
+
 	/*
 	 * If any internal parameters affecting this node have changed, we'd
 	 * better destroy and recreate the cursor.  Otherwise, rewinding it should
@@ -1598,8 +1636,9 @@ postgresEndForeignScan(ForeignScanState *node)
 		return;
 
 	/* Close the cursor if open, to prevent accumulation of cursors */
-	if (fsstate->cursor_exists)
+	if (fsstate->cursor_exists && fsstate->cache_timeout == 0) {
 		close_cursor(fsstate->conn, fsstate->cursor_number);
+	}
 
 	/* Release remote connection */
 	ReleaseConnection(fsstate->conn);
@@ -3342,6 +3381,10 @@ create_cursor(ForeignScanState *node)
 							 values);
 
 		MemoryContextSwitchTo(oldcontext);
+	}
+
+	if (fsstate->cache_timeout > 0) {
+		return cache_create_cursor(node);
 	}
 
 	/* Construct the DECLARE CURSOR command */
@@ -5343,6 +5386,8 @@ apply_server_options(PgFdwRelationInfo *fpinfo)
 				ExtractExtensionList(defGetString(def), false);
 		else if (strcmp(def->defname, "fetch_size") == 0)
 			fpinfo->fetch_size = strtol(defGetString(def), NULL, 10);
+		else if (strcmp(def->defname, "cache_timeout") == 0)
+			fpinfo->cache_timeout = strtol(defGetString(def), NULL, 10);
 	}
 }
 
@@ -5364,6 +5409,8 @@ apply_table_options(PgFdwRelationInfo *fpinfo)
 			fpinfo->use_remote_estimate = defGetBoolean(def);
 		else if (strcmp(def->defname, "fetch_size") == 0)
 			fpinfo->fetch_size = strtol(defGetString(def), NULL, 10);
+		else if (strcmp(def->defname, "cache_timeout") == 0) 
+			fpinfo->cache_timeout = strtol(defGetString(def), NULL, 10);
 	}
 }
 
@@ -5398,6 +5445,7 @@ merge_fdw_options(PgFdwRelationInfo *fpinfo,
 	fpinfo->shippable_extensions = fpinfo_o->shippable_extensions;
 	fpinfo->use_remote_estimate = fpinfo_o->use_remote_estimate;
 	fpinfo->fetch_size = fpinfo_o->fetch_size;
+	fpinfo->cache_timeout = fpinfo_o->cache_timeout;
 
 	/* Merge the table level options from either side of the join. */
 	if (fpinfo_i)
@@ -5419,6 +5467,9 @@ merge_fdw_options(PgFdwRelationInfo *fpinfo,
 		 * relation sizes.
 		 */
 		fpinfo->fetch_size = Max(fpinfo_o->fetch_size, fpinfo_i->fetch_size);
+
+		/* How to merge cache_out?  */
+		fpinfo->cache_timeout = Max(fpinfo_o->cache_timeout, fpinfo_i->cache_timeout); 
 	}
 }
 
@@ -6583,4 +6634,129 @@ find_em_expr_for_input_target(PlannerInfo *root,
 
 	elog(ERROR, "could not find pathkey item to sort");
 	return NULL;				/* keep compiler quiet */
+}
+
+/* 
+ * pgc_fdw: foundation db cache 
+ *   Here we took an extremely simple and naive approach.   We first
+ *   check if we have a valid cache result, if no, we will simply
+ *   execute the query, cache all data into foundation db, and claim
+ *   we have a valid cache result.   Next, we simply pull the whole 
+ *   result set into batch memory context.
+ *
+ *   It will be ugly if the query result is huge -- but, this will 
+ *   be ugly for pg fdw anyway regardless how we do cache.
+ */
+void cache_create_cursor(ForeignScanState *node)
+{
+	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
+	int			numParams = fsstate->numParams;
+	const char **values = fsstate->param_values;
+	PGconn	   *conn = fsstate->conn;
+	PGresult   *res;
+	MemoryContext oldctxt;
+	StringInfoData buf;
+	int64_t ts;
+	int64_t to;
+	int32_t status;
+	unsigned cursor_number;
+
+	fsstate->tuples = NULL;
+	fsstate->next_tuple = 0;
+	fsstate->num_tuples = 0;
+	MemoryContextReset(fsstate->batch_cxt);
+	oldctxt = MemoryContextSwitchTo(fsstate->batch_cxt);
+
+	initStringInfo(&buf);
+	appendStringInfo(&buf, "Dbid: %d Relid: %d, Query: %s", 
+			MyDatabaseId, fsstate->rel->rd_id, fsstate->query);
+
+	for (int i = 0; i < numParams; i++) {
+		if (values[i] == NULL) {
+			appendStringInfo(&buf, " ,PARAM %d: NULL", i);
+		} else {
+			appendStringInfo(&buf, " ,PARAM %d: {%s}", i, values[i]);
+		}
+	}
+
+	ts = get_ts();
+	to = (int64_t )fsstate->cache_timeout;
+	to *= 1000000;
+	qry_key_build(&fsstate->cache_qk, buf.data);
+
+	status = pgcache_get_status(&fsstate->cache_qk, ts, &to, buf.data);
+	CHECK_COND(status != QRY_FAIL, "failed to cache query %s", buf.data);
+
+	if (status >= 0) {
+		status = pgcache_retrieve(&fsstate->cache_qk, to, &fsstate->num_tuples, &fsstate->tuples);
+		if (status >= 0) {
+			fsstate->eof_reached = true;
+		}
+		CHECK_COND(status != QRY_FAIL, "failed to cache query %s", buf.data);
+	}
+		
+	if (status == QRY_FETCH) {
+		char sql[64];
+		cursor_number = GetCursorNumber(conn);
+		snprintf(sql, sizeof(sql), "FETCH ALL FROM C%u", cursor_number);
+		resetStringInfo(&buf);
+		appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s", cursor_number, fsstate->query);
+		/*
+		 * Notice that we pass NULL for paramTypes, thus forcing the remote server
+		 * to infer types for all parameters.  Since we explicitly cast every
+		 * parameter (see deparse.c), the "inference" is trivial and will produce
+		 * the desired result.  This allows us to avoid assuming that the remote
+		 * server has the same OIDs we do for the parameters' types.
+		 */
+		if (!PQsendQueryParams(conn, buf.data, numParams,
+					NULL, values, NULL, NULL, 0))
+			pgfdw_report_error(ERROR, NULL, conn, false, buf.data);
+
+		res = pgfdw_get_result(conn, buf.data);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+			pgfdw_report_error(ERROR, res, conn, true, fsstate->query);
+		}
+		PQclear(res);
+
+		res = 0;
+		PG_TRY();
+		{
+			res = pgfdw_exec_query(conn, sql);
+			if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+				pgfdw_report_error(ERROR, res, conn, false, fsstate->query);
+			}
+
+			fsstate->num_tuples = PQntuples(res);
+			fsstate->tuples = (HeapTuple *) palloc0(fsstate->num_tuples * sizeof(HeapTuple));
+			for (int i = 0; i < fsstate->num_tuples; i++) {
+				fsstate->tuples[i] = make_tuple_from_result_row(res, i, 
+						fsstate->rel,
+						fsstate->attinmeta,
+						fsstate->retrieved_attrs,
+						node,
+						fsstate->temp_cxt);
+			}
+			fsstate->eof_reached = true;
+			close_cursor(conn, cursor_number);
+		}
+		PG_FINALLY(); 
+		{
+			if (res) {
+				PQclear(res);
+			}
+			res = 0;
+		}
+		PG_END_TRY();
+
+		/* 
+		 * we don't care about return status, if it fail, we will mark it in cache metadata
+		 * but the data we fectched this time is still good.
+		 */
+		pgcache_populate(&fsstate->cache_qk, to, fsstate->num_tuples, fsstate->tuples);
+	}
+
+	MemoryContextSwitchTo(oldctxt);
+
+	/* Now we consider this cursor (from cache) existed. */
+	fsstate->cursor_exists = true;
 }

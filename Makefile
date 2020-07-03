@@ -7,6 +7,7 @@ OBJS = \
 	deparse.o \
 	option.o \
 	cache.o \
+	cache_fn.o \
 	pgc_fdw.o \
 	shippable.o
 PGFILEDESC = "pgc_fdw - foreign data wrapper for PostgreSQL"
@@ -30,3 +31,5 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
+
+SHLIB_LINK += -lfdb_c -lcrypto

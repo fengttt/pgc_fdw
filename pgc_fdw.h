@@ -86,6 +86,8 @@ typedef struct PgFdwRelationInfo
 
 	int			fetch_size;		/* fetch size for this remote table */
 
+	int			cache_timeout;
+
 	/*
 	 * Name of the relation, for use while EXPLAINing ForeignScan.  It is used
 	 * for join and upper relations but is set for all relations.  For a base
@@ -207,5 +209,12 @@ extern const char *get_jointype_name(JoinType jointype);
 /* in shippable.c */
 extern bool is_builtin(Oid objectId);
 extern bool is_shippable(Oid objectId, Oid classId, PgFdwRelationInfo *fpinfo);
+
+extern void _PG_init(void);
+extern void _PG_fini(void);
+
+/* cache.c */
+extern void pgcache_init(void);
+extern void pgcache_fini(void);
 
 #endif							/* pgc_fdw_H */
