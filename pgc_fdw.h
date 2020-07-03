@@ -86,6 +86,8 @@ typedef struct PgFdwRelationInfo
 
 	int			fetch_size;		/* fetch size for this remote table */
 
+	int			cache_timeout;
+
 	/*
 	 * Name of the relation, for use while EXPLAINing ForeignScan.  It is used
 	 * for join and upper relations but is set for all relations.  For a base

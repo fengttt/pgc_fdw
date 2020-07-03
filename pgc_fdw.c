@@ -71,6 +71,9 @@ enum FdwScanPrivateIndex
 	FdwScanPrivateRetrievedAttrs,
 	/* Integer representing the desired fetch_size */
 	FdwScanPrivateFetchSize,
+	
+	/* Cache timeout: */
+	FdwScanPrivateCacheTimeout,
 
 	/*
 	 * String describing join i.e. names of relations being joined and types
@@ -159,7 +162,10 @@ typedef struct PgFdwScanState
 	MemoryContext temp_cxt;		/* context for per-tuple temporary data */
 
 	int			fetch_size;		/* number of tuples per fetch */
+
+	int cache_timeout;
 } PgFdwScanState;
+
 
 /*
  * Execution state of a foreign insert/update/delete operation.
@@ -600,6 +606,7 @@ postgresGetForeignRelSize(PlannerInfo *root,
 	fpinfo->fdw_tuple_cost = DEFAULT_FDW_TUPLE_COST;
 	fpinfo->shippable_extensions = NIL;
 	fpinfo->fetch_size = 100;
+	fpinfo->cache_timeout = 3600;
 
 	apply_server_options(fpinfo);
 	apply_table_options(fpinfo);
@@ -1360,9 +1367,11 @@ postgresGetForeignPlan(PlannerInfo *root,
 	 * Build the fdw_private list that will be available to the executor.
 	 * Items in the list must match order in enum FdwScanPrivateIndex.
 	 */
-	fdw_private = list_make3(makeString(sql.data),
+	fdw_private = list_make4(makeString(sql.data),
 							 retrieved_attrs,
-							 makeInteger(fpinfo->fetch_size));
+							 makeInteger(fpinfo->fetch_size),
+							 makeInteger(fpinfo->cache_timeout),
+							 );
 	if (IS_JOIN_REL(foreignrel) || IS_UPPER_REL(foreignrel))
 		fdw_private = lappend(fdw_private,
 							  makeString(fpinfo->relation_name));
@@ -1447,6 +1456,8 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 												 FdwScanPrivateRetrievedAttrs);
 	fsstate->fetch_size = intVal(list_nth(fsplan->fdw_private,
 										  FdwScanPrivateFetchSize));
+	fsstate->cache_timeout = intVal(list_nth(fsplan->fdw_private, FdwScanPrivateCacheTimeout));
+
 
 	/* Create contexts for batches of tuples and per-tuple temp workspace. */
 	fsstate->batch_cxt = AllocSetContextCreate(estate->es_query_cxt,
@@ -5343,6 +5354,8 @@ apply_server_options(PgFdwRelationInfo *fpinfo)
 				ExtractExtensionList(defGetString(def), false);
 		else if (strcmp(def->defname, "fetch_size") == 0)
 			fpinfo->fetch_size = strtol(defGetString(def), NULL, 10);
+		else if (strcmp(def->defname, "cache_timeout") == 0)
+			fpinfo->cache_timeout = (defGetString(def), NULL, 10);
 	}
 }
 
@@ -5364,6 +5377,8 @@ apply_table_options(PgFdwRelationInfo *fpinfo)
 			fpinfo->use_remote_estimate = defGetBoolean(def);
 		else if (strcmp(def->defname, "fetch_size") == 0)
 			fpinfo->fetch_size = strtol(defGetString(def), NULL, 10);
+		else if (strcmp(def->defname, "cache_timeout") == 0) 
+			fpinfo->cache_timeout = strtol(defGetString(def), NULL, 10);
 	}
 }
 
@@ -5398,6 +5413,7 @@ merge_fdw_options(PgFdwRelationInfo *fpinfo,
 	fpinfo->shippable_extensions = fpinfo_o->shippable_extensions;
 	fpinfo->use_remote_estimate = fpinfo_o->use_remote_estimate;
 	fpinfo->fetch_size = fpinfo_o->fetch_size;
+	fpinfo->cache_timeout = fpinfo_o->cache_timeout;
 
 	/* Merge the table level options from either side of the join. */
 	if (fpinfo_i)
@@ -5419,6 +5435,9 @@ merge_fdw_options(PgFdwRelationInfo *fpinfo,
 		 * relation sizes.
 		 */
 		fpinfo->fetch_size = Max(fpinfo_o->fetch_size, fpinfo_i->fetch_size);
+
+		/* How to merge cache_out?  */
+		fpinfo->cache_timeout = Max(fpinfo_o->cache_timeout, fpinfo_i->cache_timeout); 
 	}
 }
 

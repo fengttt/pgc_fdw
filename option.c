@@ -139,9 +139,22 @@ pgc_fdw_validator(PG_FUNCTION_ARGS)
 			if (fetch_size <= 0)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("%s requires a non-negative integer value",
+						 errmsg("%s requires a positive integer value",
 								def->defname)));
 		}
+
+		else if (strcmp(def->defname, "cache_timeout") == 0) 
+		{
+			int cache_timeout;
+			cache_timeout = strtol(defGetString(def), NULL, 3600);
+			if (cache_timeout < 0) {
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("%s requires a non-negative integer value",
+							 def->defname)));
+			}
+		}
+
 		else if (strcmp(def->defname, "password_required") == 0)
 		{
 			bool		pw_required = defGetBoolean(def);
@@ -203,6 +216,11 @@ InitPgFdwOptions(void)
 		/* fetch_size is available on both server and table */
 		{"fetch_size", ForeignServerRelationId, false},
 		{"fetch_size", ForeignTableRelationId, false},
+
+		/* cache_timeout is available on both server tand table */
+		{"cache_timeout", ForeignServerRelationId, false},
+		{"cache_timeout", ForeignTableRelationId, false}, 
+
 		{"password_required", UserMappingRelationId, false},
 
 		/*
