@@ -210,4 +210,11 @@ extern const char *get_jointype_name(JoinType jointype);
 extern bool is_builtin(Oid objectId);
 extern bool is_shippable(Oid objectId, Oid classId, PgFdwRelationInfo *fpinfo);
 
+extern void _PG_init(void);
+extern void _PG_fini(void);
+
+/* cache.c */
+extern void pgcache_init(void);
+extern void pgcache_fini(void);
+
 #endif							/* pgc_fdw_H */

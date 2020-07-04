@@ -15,3 +15,12 @@
 #include "pgc_fdw.h"
 #include "utils/builtins.h"
 #include "utils/varlena.h"
+
+void pgcache_init()
+{
+}
+
+void pgcache_fini()
+{
+}
+

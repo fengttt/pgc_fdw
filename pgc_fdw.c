@@ -47,6 +47,16 @@
 
 PG_MODULE_MAGIC;
 
+void _PG_init(void)
+{
+	pgcache_init();
+}
+
+void _PG_fini(void)
+{
+	pgcache_fini();
+}
+
 /* Default CPU cost to start up a foreign query. */
 #define DEFAULT_FDW_STARTUP_COST	100.0
 
