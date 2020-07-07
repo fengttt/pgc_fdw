@@ -45,6 +45,8 @@
 #include "utils/sampling.h"
 #include "utils/selfuncs.h"
 
+#include "cache.h"
+
 PG_MODULE_MAGIC;
 
 void _PG_init(void)

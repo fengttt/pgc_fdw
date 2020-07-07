@@ -10,11 +10,17 @@
 #include "postgres.h"
 #include "access/htup_details.h"
 #include "utils/timestamp.h"
+#include "utils/builtins.h"
+#include "utils/varlena.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 
 #include <stdint.h>
 #include <openssl/sha.h>
+
+#define FDB_API_VERSION 620
+#include "foundationdb/fdb_c.h"
+#include "foundationdb/fdb_c_options.g.h"
 
 #define UNUSED(x) (void)(x)
 
@@ -33,6 +39,8 @@ static inline int64_t get_ts() {
 	// current timestamp, as postgres timestamptz
 	return GetCurrentTimestamp();
 }
+
+FDBDatabase *get_fdb(void);
 
 static const int32_t QRY_RUNNING = -1; 
 static const int32_t QRY_TOOBIG = -2;
@@ -90,5 +98,19 @@ static inline void tup_key_init(tup_key_t *k, const char *sha) {
 	memcpy(k->SHA, sha, 20);
 	k->seq = 0;
 }
+
+static inline fdb_error_t fdb_wait_error(FDBFuture *f) {
+	fdb_error_t blkErr = fdb_future_block_until_ready(f);
+	if (!blkErr) {
+		return fdb_future_get_error(f);
+	} else {
+		return blkErr;
+	}
+}
+
+void pgcache_init(void);
+void pgcache_fini(void);
+
+
 
 #endif /* PGC_FDW_CACHE_H */
