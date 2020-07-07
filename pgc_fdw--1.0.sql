@@ -33,8 +33,12 @@ CREATE FUNCTION pgc_fdw_set(sha text,
 AS 'MODULE_PATHNAME', 'pgc_fdw_set'
 LANGUAGE C;
 
+CREATE FUNCTION pgc_fdw_wait(sha text)
+RETURNS int
+AS 'MODULE_PATHNAME', 'pgc_fdw_wait'
+LANGUAGE C;
+
 CREATE FUNCTION pgc_fdw_invalidate(sha text)
 RETURNS int
 AS 'MODULE_PATHNAME', 'pgc_fdw_invalidate'
 LANGUAGE C;
-
