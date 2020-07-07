@@ -14,7 +14,6 @@
 #include "commands/extension.h"
 #include "pgc_fdw.h"
 #include "utils/builtins.h"
-#include "utils/timestamp.h"
 #include "utils/varlena.h"
 
 #include "cache.h"

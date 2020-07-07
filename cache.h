@@ -7,6 +7,12 @@
 #ifndef PGC_FDW_CACHE_H
 #define PGC_FDW_CACHE_H
 
+#include "postgres.h"
+#include "access/htup_details.h"
+#include "utils/timestamp.h"
+#include "funcapi.h"
+#include "miscadmin.h"
+
 #include <stdint.h>
 #include <openssl/sha.h>
 
@@ -28,9 +34,9 @@ static inline int64_t get_ts() {
 	return GetCurrentTimestamp();
 }
 
-const int32_t QRY_RUNNING = -1; 
-const int32_t QRY_TOOBIG = -2;
-const int32_t QRY_FAIL = -3;
+static const int32_t QRY_RUNNING = -1; 
+static const int32_t QRY_TOOBIG = -2;
+static const int32_t QRY_FAIL = -3;
 
 typedef struct qry_key_t {
 	char PREFIX[4];
