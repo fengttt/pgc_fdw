@@ -7,6 +7,7 @@
 #include "cache.h"
 #include <pthread.h>
 
+static bool fdb_inited;
 static FDBDatabase *fdb;
 static pthread_t pth;
 
@@ -21,10 +22,15 @@ static void* runNetwork() {
 
 void pgcache_init()
 {
-	CHECK_COND(fdb == 0, "Reinit foundation db");
-	CHECK_ERR(fdb_setup_network(), "Cannot setup fdb network.");
-	CHECK_ERR(pthread_create(&pth, NULL, &runNetwork, NULL), "Cannot create fdb network thread");
-	CHECK_ERR(fdb_create_database(NULL, &fdb), "Cannot create fdb");
+	if (!fdb_inited) {
+		CHECK_COND( fdb == 0, "Reinit foundation db");
+		CHECK_ERR( fdb_select_api_version(FDB_API_VERSION), "Canot select fdb api version");
+		CHECK_ERR( fdb_setup_network(), "Cannot setup fdb network.");
+		fdb_inited = true;
+	}
+
+	CHECK_ERR( pthread_create(&pth, NULL, &runNetwork, NULL), "Cannot create fdb network thread");
+	CHECK_ERR( fdb_create_database(NULL, &fdb), "Cannot create fdb");
 }
 
 void pgcache_fini()

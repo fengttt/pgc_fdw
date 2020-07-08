@@ -19,7 +19,7 @@ CREATE FOREIGN DATA WRAPPER pgc_fdw
 
 CREATE FUNCTION pgc_fdw_cache_info(
     OUT sha text,
-    OUT ts timestamp with timezone,
+    OUT ts timestamp with time zone,
     OUT tupcnt int,
     OUT qry text
 ) RETURNS SETOF record
@@ -27,7 +27,7 @@ AS 'MODULE_PATHNAME', 'pgc_fdw_cache_info'
 LANGUAGE C;
 
 CREATE FUNCTION pgc_fdw_set(sha text,   
-    ts timestamp with timezone,
+    ts timestamp with time zone,
     tupcnt int,
     qry text) RETURNS int
 AS 'MODULE_PATHNAME', 'pgc_fdw_set'

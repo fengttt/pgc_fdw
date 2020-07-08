@@ -12,7 +12,6 @@ OBJS = \
 	shippable.o
 PGFILEDESC = "pgc_fdw - foreign data wrapper for PostgreSQL"
 
-CFLAGS += -Wno-declaration-after-statement
 PG_CPPFLAGS = -I$(libpq_srcdir)
 SHLIB_LINK_INTERNAL = $(libpq)
 
@@ -32,3 +31,5 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
+
+SHLIB_LINK += -lfdb_c
