@@ -122,17 +122,115 @@ Datum pgc_fdw_cache_info(PG_FUNCTION_ARGS)
 PG_FUNCTION_INFO_V1(pgc_fdw_set);
 Datum pgc_fdw_set(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_NULL();
+	text *shatext; 
+	char *shastr; 
+
+	fdb_error_t err = 0;
+	FDBTransaction *tr = 0;
+	qry_key_t qk;
+
+	CHECK_COND( !PG_ARGISNULL(0), "sha cannot be null");
+	shatext = PG_GETARG_TEXT_PP(0);
+	shastr = text_to_cstring(shatext);
+	CHECK_COND( strlen(shastr) == 40, "sha should be hex encoded."); 
+
+	qry_key_init(&qk, shastr);
+	
+	CHECK_ERR( fdb_database_create_transaction(get_fdb(), &tr), "cannot create transaction");
+
+	if (PG_ARGISNULL(1)) {
+		fdb_transaction_clear(tr, (const uint8_t *) &qk, sizeof(qk)); 
+	} else {
+		int64_t ts = PG_GETARG_INT64(1);
+		int32_t status = PG_GETARG_INT32(2);
+		text *qtxt = PG_GETARG_TEXT_PP(3);
+		char *qry = 0;
+		int qrysz = 0;
+		ssize_t qv_sz;
+		qry_val_t *qv;
+
+		if (qtxt) {
+			qry = text_to_cstring(qtxt);
+			qrysz = strlen(qry);
+		}
+
+		qv_sz = qry_val_sz(qrysz);
+		qv = (qry_val_t *) palloc(qv_sz); 
+		qv->ts = ts;
+		qv->status = status;
+		qv->txtsz = qrysz;
+		memcpy(qv->qrytxt, qry, qrysz);
+		qv->qrytxt[qrysz] = 0;
+		fdb_transaction_set(tr, (const uint8_t *) &qk, sizeof(qk),
+				(const uint8_t *) qv, qv_sz);
+	}
+
+	if (!err) {
+		FDBFuture *f = fdb_transaction_commit(tr);
+		err = fdb_wait_error(f);
+		fdb_future_destroy(f);
+	}
+
+	fdb_transaction_destroy(tr);
+	PG_RETURN_INT32(err);
 }
 
-PG_FUNCTION_INFO_V1(pgc_fdw_wait);
-Datum pgc_fdw_wait(PG_FUNCTION_ARGS)
+PG_FUNCTION_INFO_V1(pgc_fdw_watch);
+Datum pgc_fdw_watch(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_NULL();
+	text *shatext;
+	char *shastr;
+	
+	fdb_error_t err = 0;
+	FDBTransaction *tr = 0;
+	qry_key_t qk;
+	FDBFuture *f = 0;
+
+
+
+	CHECK_COND( !PG_ARGISNULL(0), "sha cannot be null");
+	shatext = PG_GETARG_TEXT_PP(0);
+	shastr = text_to_cstring(shatext);
+	CHECK_COND( strlen(shastr) == 40, "sha should be hex encoded."); 
+	qry_key_init(&qk, shastr);
+	
+	CHECK_ERR( fdb_database_create_transaction(get_fdb(), &tr), "cannot create transaction");
+	f = fdb_transaction_watch(tr, (const uint8_t *) & qk, sizeof(qk));
+	err = fdb_wait_error(f);
+	fdb_future_destroy(f);
+	fdb_transaction_destroy(tr);
+
+	PG_RETURN_INT32(err);
 }
 
 PG_FUNCTION_INFO_V1(pgc_fdw_invalidate);
 Datum pgc_fdw_invalidate(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_NULL();
+	text *shatext;
+	char *shastr;
+	
+	tup_key_t ka;
+	tup_key_t kz;
+	fdb_error_t err = 0;
+	FDBTransaction *tr = 0;
+
+	CHECK_COND( !PG_ARGISNULL(0), "sha cannot be null");
+	shatext = PG_GETARG_TEXT_PP(0);
+	shastr = text_to_cstring(shatext);
+	CHECK_COND( strlen(shastr) == 40, "sha should be hex encoded."); 
+
+	tup_key_init(&ka, shastr, 0);
+	tup_key_init(&kz, shastr, -1);
+	
+	CHECK_ERR( fdb_database_create_transaction(get_fdb(), &tr), "cannot create transaction");
+	fdb_transaction_clear_range(tr, (const uint8_t *) &ka, sizeof(ka), 
+			                        (const uint8_t *) &kz, sizeof(kz));
+	if (!err) {
+		FDBFuture *f = fdb_transaction_commit(tr);
+		err = fdb_wait_error(f);
+		fdb_future_destroy(f);
+	}
+
+	fdb_transaction_destroy(tr);
+	PG_RETURN_INT32(err);
 }

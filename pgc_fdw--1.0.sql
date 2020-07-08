@@ -33,9 +33,9 @@ CREATE FUNCTION pgc_fdw_set(sha text,
 AS 'MODULE_PATHNAME', 'pgc_fdw_set'
 LANGUAGE C;
 
-CREATE FUNCTION pgc_fdw_wait(sha text)
+CREATE FUNCTION pgc_fdw_watch(sha text)
 RETURNS int
-AS 'MODULE_PATHNAME', 'pgc_fdw_wait'
+AS 'MODULE_PATHNAME', 'pgc_fdw_watch'
 LANGUAGE C;
 
 CREATE FUNCTION pgc_fdw_invalidate(sha text)
