@@ -41,9 +41,8 @@ static inline int64_t get_ts() {
 
 FDBDatabase *get_fdb(void);
 
-static const int32_t QRY_RUNNING = -1; 
-static const int32_t QRY_TOOBIG = -2;
-static const int32_t QRY_FAIL = -3;
+static const int32_t QRY_FETCH = -1; 
+static const int32_t QRY_FAIL = -2;
 
 typedef struct qry_key_t {
 	char PREFIX[4];
@@ -105,6 +104,9 @@ static inline fdb_error_t fdb_wait_error(FDBFuture *f) {
 
 void pgcache_init(void);
 void pgcache_fini(void);
+int32_t pgcache_get_status(const qry_key_t* qk, int64_t ts, const char *data);
+int32_t pgcache_populate(const qry_key_t* qk, int64_t ts, int ntup, HeapTuple *tups); 
+int32_t pgcache_retrieve(const qry_key_t* qk, int64_t ts, int *ntup, HeapTuple **tups); 
 
 
 
