@@ -175,7 +175,11 @@ typedef struct PgFdwScanState
 
 	int			fetch_size;		/* number of tuples per fetch */
 
+	/* pgc cache info */
 	int cache_timeout;
+	char qsha[20];
+	/* reuse num_tuple and next_tuple */
+
 } PgFdwScanState;
 
 
@@ -437,7 +441,11 @@ static bool ec_member_matches_foreign(PlannerInfo *root, RelOptInfo *rel,
 									  EquivalenceClass *ec, EquivalenceMember *em,
 									  void *arg);
 static void create_cursor(ForeignScanState *node);
+static void cache_create_cursor(ForeignScanState *node);
+
 static void fetch_more_data(ForeignScanState *node);
+static void cache_fetch_more_data(ForeignScanState *node);
+
 static void close_cursor(PGconn *conn, unsigned int cursor_number);
 static PgFdwModifyState *create_foreign_modify(EState *estate,
 											   RangeTblEntry *rte,
@@ -3366,6 +3374,10 @@ create_cursor(ForeignScanState *node)
 		MemoryContextSwitchTo(oldcontext);
 	}
 
+	if (fsstate->cache_timeout > 0) {
+		return cache_create_cursor(node);
+	}
+
 	/* Construct the DECLARE CURSOR command */
 	initStringInfo(&buf);
 	appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s",
@@ -3414,6 +3426,10 @@ fetch_more_data(ForeignScanState *node)
 	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
 	PGresult   *volatile res = NULL;
 	MemoryContext oldcontext;
+
+	if (fsstate->cache_timeout > 0) {
+		return cache_fetch_more_data(node);
+	}
 
 	/*
 	 * We'll store the tuples in the batch_cxt.  First, flush the previous
@@ -6613,4 +6629,13 @@ find_em_expr_for_input_target(PlannerInfo *root,
 
 	elog(ERROR, "could not find pathkey item to sort");
 	return NULL;				/* keep compiler quiet */
+}
+
+/* pgc_fdw: foundation db cache */
+void cache_create_cursor(ForeignScanState *node)
+{
+}
+
+void cache_fetch_more_data(ForeignScanState *node)
+{
 }
