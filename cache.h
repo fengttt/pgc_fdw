@@ -34,6 +34,13 @@
 		elog(ERROR, msg, ##__VA_ARGS__);	\
 	} else (void) 0
 
+#define ERR_DONE(err, msg, ...)				\
+	if (err) {								\
+		elog(LOG, msg, ##__VA_ARGS__);		\
+		goto done;							\
+	} else (void) 0
+		
+
 static inline int64_t get_ts() {
 	// current timestamp, as postgres timestamptz
 	return GetCurrentTimestamp();
@@ -43,6 +50,7 @@ FDBDatabase *get_fdb(void);
 
 static const int32_t QRY_FETCH = -1; 
 static const int32_t QRY_FAIL = -2;
+static const int32_t QRY_FAIL_NO_RETRY = -3;
 
 typedef struct qry_key_t {
 	char PREFIX[4];
@@ -91,6 +99,12 @@ static inline void tup_key_init(tup_key_t *k, const char *shastr, int seq) {
 	k->seq = seq;
 }
 
+static inline void tup_key_initsha(tup_key_t *k, const char *sha, int seq) { 
+	memcpy(k->PREFIX, "TUPL", 4);
+	memcpy(k->SHA, sha, 20);
+	k->seq = seq;
+}
+
 static inline fdb_error_t fdb_wait_error(FDBFuture *f) {
 	fdb_error_t blkErr = fdb_future_block_until_ready(f);
 	if (!blkErr) {
@@ -101,10 +115,9 @@ static inline fdb_error_t fdb_wait_error(FDBFuture *f) {
 }
 
 
-
 void pgcache_init(void);
 void pgcache_fini(void);
-int32_t pgcache_get_status(const qry_key_t* qk, int64_t ts, const char *data);
+int32_t pgcache_get_status(const qry_key_t* qk, int64_t ts, int64_t *to, const char *data); 
 int32_t pgcache_populate(const qry_key_t* qk, int64_t ts, int ntup, HeapTuple *tups); 
 int32_t pgcache_retrieve(const qry_key_t* qk, int64_t ts, int *ntup, HeapTuple **tups); 
 

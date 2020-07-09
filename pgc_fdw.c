@@ -6646,6 +6646,7 @@ void cache_create_cursor(ForeignScanState *node)
 	MemoryContext oldctxt;
 	StringInfoData buf;
 	int64_t ts;
+	int64_t to;
 	int32_t status;
 
 	fsstate->tuples = NULL;
@@ -6667,12 +6668,15 @@ void cache_create_cursor(ForeignScanState *node)
 	}
 
 	ts = get_ts();
+	to = (int64_t )fsstate->cache_timeout;
+	to *= 1000000;
 	qry_key_build(&fsstate->cache_qk, buf.data);
-	status = pgcache_get_status(&fsstate->cache_qk, ts, buf.data);
+
+	status = pgcache_get_status(&fsstate->cache_qk, ts, &to, buf.data);
 	CHECK_COND(status != QRY_FAIL, "failed to cache query %s", buf.data);
 
 	if (status >= 0) {
-		status = pgcache_retrieve(&fsstate->cache_qk, ts, &fsstate->num_tuples, &fsstate->tuples);
+		status = pgcache_retrieve(&fsstate->cache_qk, to, &fsstate->num_tuples, &fsstate->tuples);
 		CHECK_COND(status != QRY_FAIL, "failed to cache query %s", buf.data);
 	}
 		
@@ -6732,7 +6736,7 @@ void cache_create_cursor(ForeignScanState *node)
 		 * we don't care about return status, if it fail, we will mark it in cache metadata
 		 * but the data we fectched this time is still good.
 		 */
-		pgcache_populate(&fsstate->cache_qk, ts, fsstate->num_tuples, fsstate->tuples);
+		pgcache_populate(&fsstate->cache_qk, to, fsstate->num_tuples, fsstate->tuples);
 	}
 
 	MemoryContextSwitchTo(oldctxt);

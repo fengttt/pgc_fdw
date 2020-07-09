@@ -186,8 +186,6 @@ Datum pgc_fdw_watch(PG_FUNCTION_ARGS)
 	qry_key_t qk;
 	FDBFuture *f = 0;
 
-
-
 	CHECK_COND( !PG_ARGISNULL(0), "sha cannot be null");
 	shatext = PG_GETARG_TEXT_PP(0);
 	shastr = text_to_cstring(shatext);
@@ -213,6 +211,7 @@ Datum pgc_fdw_invalidate(PG_FUNCTION_ARGS)
 	tup_key_t kz;
 	fdb_error_t err = 0;
 	FDBTransaction *tr = 0;
+	FDBFuture *f = 0;
 
 	CHECK_COND( !PG_ARGISNULL(0), "sha cannot be null");
 	shatext = PG_GETARG_TEXT_PP(0);
@@ -225,12 +224,9 @@ Datum pgc_fdw_invalidate(PG_FUNCTION_ARGS)
 	CHECK_ERR( fdb_database_create_transaction(get_fdb(), &tr), "cannot create transaction");
 	fdb_transaction_clear_range(tr, (const uint8_t *) &ka, sizeof(ka), 
 			                        (const uint8_t *) &kz, sizeof(kz));
-	if (!err) {
-		FDBFuture *f = fdb_transaction_commit(tr);
-		err = fdb_wait_error(f);
-		fdb_future_destroy(f);
-	}
-
+	f = fdb_transaction_commit(tr);
+	err = fdb_wait_error(f);
+	fdb_future_destroy(f);
 	fdb_transaction_destroy(tr);
 	PG_RETURN_INT32(err);
 }
