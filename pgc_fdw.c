@@ -6731,7 +6731,7 @@ void cache_create_cursor(ForeignScanState *node)
 						fsstate->attinmeta,
 						fsstate->retrieved_attrs,
 						node,
-						fsstate->batch_cxt);
+						fsstate->temp_cxt);
 			}
 			fsstate->eof_reached = true;
 			close_cursor(conn, cursor_number);

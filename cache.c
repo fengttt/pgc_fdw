@@ -191,6 +191,10 @@ int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *t
 	tup_key_t ka;
 	tup_key_t kz;
 
+	char qkbuf[QK_DUMP_SZ];
+	qry_key_dump(qk, qkbuf);
+	elog(LOG, "Populating %d keys, for qk %s.", ntup, qkbuf);
+
 	for (int i = 0; i < 10; i++) {
 		ERR_DONE( fdb_database_create_transaction(get_fdb(), &tr), "cannot begin fdb transaction");
 		f = fdb_transaction_get(tr, (const uint8_t *) qk, sizeof(qry_key_t), 0);

@@ -2,45 +2,10 @@
 
 typedef struct cache_info_ctxt_t {
 	TupleDesc tupdesc;
-	fdb_error_t err;
-	FDBTransaction *tr;
-	FDBFuture *f;
-	const FDBKeyValue *kv;
 	int kvCnt;
-	fdb_bool_t hasMore;
+	qry_key_t *qks;
+	qry_val_t **qvs;
 } cache_info_ctxt_t;
-
-static fdb_error_t cache_info_cleanup(cache_info_ctxt_t *ctxt)
-{
-	fdb_error_t err = 0;
-
-	if (ctxt->f) {
-		fdb_future_destroy(ctxt->f);
-		ctxt->f = 0;
-	}
-
-	if (ctxt->tr) {
-		if (ctxt->err == 0) {
-			FDBFuture *f = fdb_transaction_commit(ctxt->tr);
-			err = fdb_wait_error(f);
-			fdb_future_destroy(f);
-		} else {
-			err = ctxt->err;
-		}
-
-		fdb_transaction_destroy(ctxt->tr);
-		ctxt->tr = 0;
-	}
-	return err;
-}
-
-#define CTXT_CHECK_ERR(ctxt, errcode)	\
-	ctxt->err = (errcode);				\
-	if (ctxt->err) {					\
-		cache_info_cleanup(ctxt);		\
-		elog(ERROR, "fdb error at %s:%d", __FILE__, __LINE__);	\
-	} else (void) 0
-	
 
 PG_FUNCTION_INFO_V1(pgc_fdw_cache_info);
 Datum pgc_fdw_cache_info(PG_FUNCTION_ARGS)
@@ -51,6 +16,17 @@ Datum pgc_fdw_cache_info(PG_FUNCTION_ARGS)
 
 	if (SRF_IS_FIRSTCALL()) {
 		TupleDesc tupdesc;
+
+		fdb_error_t err = 0;
+		FDBTransaction *tr = 0;
+		FDBFuture *f = 0;
+		const FDBKeyValue *kv;
+		fdb_bool_t hasMore;
+		qry_key_t ka;
+		qry_key_t kz;
+
+		qry_key_init_az(&ka, 0);
+		qry_key_init_az(&kz, 0xff);
 		funcctxt = SRF_FIRSTCALL_INIT();
 
 		oldctxt = MemoryContextSwitchTo(funcctxt->multi_call_memory_ctx);
@@ -63,28 +39,44 @@ Datum pgc_fdw_cache_info(PG_FUNCTION_ARGS)
 		}
 		fnctxt->tupdesc = BlessTupleDesc(tupdesc);
 
-		// transaction stuff.
-		CTXT_CHECK_ERR( fnctxt, fdb_database_create_transaction(get_fdb(), &fnctxt->tr)); 
-		fnctxt->f = fdb_transaction_get_range(fnctxt->tr,
-				(const uint8_t*) "PGCQ", 4, 1, 0,
-				(const uint8_t*) "PGCZ", 4, 1, 0,
-				0, 0,
-				FDB_STREAMING_MODE_WANT_ALL, 1, 0, 0);
-		CTXT_CHECK_ERR( fnctxt, fdb_wait_error(fnctxt->f));
-
-		CTXT_CHECK_ERR( fnctxt, fdb_future_get_keyvalue_array(fnctxt->f, 
-					&fnctxt->kv, &fnctxt->kvCnt, &fnctxt->hasMore));
+		ERR_DONE((err = fdb_database_create_transaction(get_fdb(), &tr)), "cannot begin fdb tx"); 
+		f = fdb_transaction_get_range(tr, 
+				(const uint8_t*) &ka, sizeof(ka), 1, 0,
+				(const uint8_t*) &kz, sizeof(kz), 1, 0,
+				0, 0, FDB_STREAMING_MODE_WANT_ALL, 1, 0, 0);
+		ERR_DONE((err = fdb_wait_error(f)), "fdb get range error");
+		ERR_DONE((err = fdb_future_get_keyvalue_array(f, &kv, &fnctxt->kvCnt, &hasMore)), 
+				"get kv array failed");
 
 		if (fnctxt->kvCnt > 0) {
 			funcctxt->max_calls = fnctxt->kvCnt;
 			funcctxt->user_fctx = fnctxt; 
-		} else {
-			// Fast path for empty results.
-			MemoryContextSwitchTo(oldctxt);
-			cache_info_cleanup(fnctxt);
-			SRF_RETURN_DONE(funcctxt);
+			fnctxt->qks = (qry_key_t *) palloc(fnctxt->kvCnt * sizeof(qry_key_t));
+			fnctxt->qvs = (qry_val_t **) palloc(fnctxt->kvCnt * sizeof(qry_val_t *));
+			for (int i = 0; i < fnctxt->kvCnt; i++) {
+				char *qvbuf;
+				memcpy(&fnctxt->qks[i], kv[i].key, kv[i].key_length);
+				qvbuf = (char *) palloc(kv[i].value_length);
+				memcpy(qvbuf, kv[i].value, kv[i].value_length);
+				fnctxt->qvs[i] = (qry_val_t *) qvbuf;
+			}
+		} 
+done:
+		if (f) {
+			fdb_future_destroy(f);
+			f = 0;
+		}
+		if (tr) {
+			fdb_transaction_destroy(tr);
+			tr = 0;
 		}
 		MemoryContextSwitchTo(oldctxt);
+		CHECK_ERR(err, "pgc_fdw_cache_info failed to read from fdb, err %d", err);
+
+		if (fnctxt->kvCnt == 0) {
+			// fast path for empty results
+			SRF_RETURN_DONE(funcctxt);
+		}
 	}
 
 	funcctxt = SRF_PERCALL_SETUP();
@@ -95,8 +87,8 @@ Datum pgc_fdw_cache_info(PG_FUNCTION_ARGS)
 		HeapTuple htup;
 		Datum result;
 
-		qry_key_t *qk = (qry_key_t *) fnctxt->kv[funcctxt->call_cntr].key;
-		qry_val_t *qv = (qry_val_t *) fnctxt->kv[funcctxt->call_cntr].value; 
+		qry_key_t *qk = (qry_key_t *) &(fnctxt->qks[funcctxt->call_cntr]); 
+		qry_val_t *qv = (qry_val_t *) fnctxt->qvs[funcctxt->call_cntr];
 
 		char shahex[40];
 		hex_encode(qk->SHA, 20, shahex);
@@ -115,7 +107,6 @@ Datum pgc_fdw_cache_info(PG_FUNCTION_ARGS)
 		SRF_RETURN_NEXT(funcctxt, result);
 	}
 
-	cache_info_cleanup(fnctxt);
 	SRF_RETURN_DONE(funcctxt);
 }
 

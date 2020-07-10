@@ -77,6 +77,19 @@ static inline void qry_key_init(qry_key_t *k, const char *shastr) {
 	}
 }
 
+static inline void qry_key_init_az(qry_key_t *k, int az) {
+	memcpy(k->PREFIX, "PGCQ", 4);
+	memset(k->SHA, az, 20);
+}
+
+#define QK_DUMP_SZ 46
+static inline void qry_key_dump(const qry_key_t *k, char *buf) {
+	memcpy(buf, k->PREFIX, 4);
+	buf[4] = '-';
+	hex_encode(k->SHA, 20, buf+5);
+	buf[45] = 0;
+}
+
 static inline void qry_key_build(qry_key_t *k, const char* qry) {
 	memcpy(k->PREFIX, "PGCQ", 4);
 	SHA1((const unsigned char*) qry, strlen(qry), (unsigned char*) k->SHA);
