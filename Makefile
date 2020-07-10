@@ -32,4 +32,4 @@ include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
 
-SHLIB_LINK += -lfdb_c
+SHLIB_LINK += -lfdb_c -lcrypto

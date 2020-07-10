@@ -24,20 +24,24 @@
 
 #define UNUSED(x) (void)(x)
 
-#define CHECK_ERR(err, msg, ...)			\
-	if (err) {								\
-		elog(ERROR, msg, ##__VA_ARGS__);	\
+#define PGC_STRINGIFY(x) #x
+#define PGC_TOSTRING(x) PGC_STRINGIFY(x)
+#define PGC_FLINE __FILE__ ":" PGC_TOSTRING(__LINE__) " " 
+
+#define CHECK_ERR(err, msg, ...)					\
+	if (err) {										\
+		elog(ERROR, PGC_FLINE msg, ##__VA_ARGS__);	\
 	} else (void) 0
 
-#define CHECK_COND(cond, msg, ...)			\
-	if (!(cond)) {							\
-		elog(ERROR, msg, ##__VA_ARGS__);	\
+#define CHECK_COND(cond, msg, ...)					\
+	if (!(cond)) {									\
+		elog(ERROR, PGC_FLINE msg, ##__VA_ARGS__);	\
 	} else (void) 0
 
-#define ERR_DONE(err, msg, ...)				\
-	if (err) {								\
-		elog(LOG, msg, ##__VA_ARGS__);		\
-		goto done;							\
+#define ERR_DONE(err, msg, ...)						\
+	if (err) {										\
+		elog(LOG, PGC_FLINE msg, ##__VA_ARGS__);	\
+		goto done;									\
 	} else (void) 0
 		
 

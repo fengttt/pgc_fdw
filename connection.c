@@ -486,7 +486,6 @@ begin_remote_xact(ConnCacheEntry *entry)
 
 		if (IsolationIsSerializable())
 			sql = "START TRANSACTION ISOLATION LEVEL SERIALIZABLE";
-#if 0
 		/* 
 		 * There is no reason to force repeatable read if current level
 		 * is read commited.   If current level is read commited, what
@@ -494,8 +493,7 @@ begin_remote_xact(ConnCacheEntry *entry)
 		 * here.
 		 */
 		else
-			sql = "START TRANSACTION ISOLATION LEVEL REPEATABLE READ";
-#endif
+			sql = "START TRANSACTION";  /*  ISOLATION LEVEL REPEATABLE READ */
 		entry->changing_xact_state = true;
 		if (sql) {
 			do_sql_command(entry->conn, sql);

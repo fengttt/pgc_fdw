@@ -56,7 +56,7 @@ int32_t pgcache_get_status(const qry_key_t *qk, int64_t ts, int64_t *to, const c
 	/* TODO: Magic 10 */
 	for (int i = 0; i < 10; i++) {
 		ERR_DONE( fdb_database_create_transaction(get_fdb(), &tr), "cannot begin fdb transaction");
-		ERR_DONE( fdb_transaction_get(tr, (const uint8_t *) qk, sizeof(qry_key_t), 0), "fdb get failed");
+		f = fdb_transaction_get(tr, (const uint8_t *) qk, sizeof(qry_key_t), 0); 
 		ERR_DONE( fdb_wait_error(f), "fdb future failed");
 		ERR_DONE( fdb_future_get_value(f, &found, (const uint8_t **) &qvbuf, &qvsz), "fdb get value failed");
 
@@ -131,7 +131,7 @@ int32_t pgcache_retrieve(const qry_key_t *qk, int64_t ts, int *ntup, HeapTuple *
 	int kvcnt;
 
 	ERR_DONE( fdb_database_create_transaction(get_fdb(), &tr), "cannot begin fdb transaction");
-	ERR_DONE( fdb_transaction_get(tr, (const uint8_t *) qk, sizeof(qry_key_t), 0), "fdb get failed");
+	f = fdb_transaction_get(tr, (const uint8_t *) qk, sizeof(qry_key_t), 0); 
 	ERR_DONE( fdb_wait_error(f), "fdb future failed");
 	ERR_DONE( fdb_future_get_value(f, &found, (const uint8_t **) &qv, &qvsz), "fdb get value failed");
 	ERR_DONE( !found || qv->ts != ts, "qry key not found");
@@ -189,7 +189,7 @@ int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *t
 
 	for (int i = 0; i < 10; i++) {
 		ERR_DONE( fdb_database_create_transaction(get_fdb(), &tr), "cannot begin fdb transaction");
-		ERR_DONE( fdb_transaction_get(tr, (const uint8_t *) qk, sizeof(qry_key_t), 0), "fdb get failed");
+		f = fdb_transaction_get(tr, (const uint8_t *) qk, sizeof(qry_key_t), 0);
 		ERR_DONE( fdb_wait_error(f), "fdb future failed");
 		ERR_DONE( fdb_future_get_value(f, &found, (const uint8_t **) &qvbuf, &qvsz), "fdb get value failed");
 		if (!found) {
