@@ -1571,6 +1571,16 @@ postgresReScanForeignScan(ForeignScanState *node)
 	if (!fsstate->cursor_exists)
 		return;
 
+	if (fsstate->cache_timeout > 0) {
+		/* force reopen a cursor. */
+		fsstate->num_tuples = 0;
+		fsstate->next_tuple = 0;
+		fsstate->eof_reached = false;
+		fsstate->cursor_exists = false;
+		return;
+	}
+
+
 	/*
 	 * If any internal parameters affecting this node have changed, we'd
 	 * better destroy and recreate the cursor.  Otherwise, rewinding it should
@@ -1626,8 +1636,9 @@ postgresEndForeignScan(ForeignScanState *node)
 		return;
 
 	/* Close the cursor if open, to prevent accumulation of cursors */
-	if (fsstate->cursor_exists)
+	if (fsstate->cursor_exists && fsstate->cache_timeout == 0) {
 		close_cursor(fsstate->conn, fsstate->cursor_number);
+	}
 
 	/* Release remote connection */
 	ReleaseConnection(fsstate->conn);
@@ -6648,6 +6659,7 @@ void cache_create_cursor(ForeignScanState *node)
 	int64_t ts;
 	int64_t to;
 	int32_t status;
+	unsigned cursor_number;
 
 	fsstate->tuples = NULL;
 	fsstate->next_tuple = 0;
@@ -6682,10 +6694,10 @@ void cache_create_cursor(ForeignScanState *node)
 		
 	if (status == QRY_FETCH) {
 		char sql[64];
-		snprintf(sql, sizeof(sql), "FETCH ALL FROM C%u", fsstate->cursor_number);
+		cursor_number = GetCursorNumber(conn);
+		snprintf(sql, sizeof(sql), "FETCH ALL FROM C%u", cursor_number);
 		resetStringInfo(&buf);
-		appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s",
-				fsstate->cursor_number, fsstate->query);
+		appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s", cursor_number, fsstate->query);
 		/*
 		 * Notice that we pass NULL for paramTypes, thus forcing the remote server
 		 * to infer types for all parameters.  Since we explicitly cast every
@@ -6719,9 +6731,10 @@ void cache_create_cursor(ForeignScanState *node)
 						fsstate->attinmeta,
 						fsstate->retrieved_attrs,
 						node,
-						fsstate->temp_cxt);
+						fsstate->batch_cxt);
 			}
 			fsstate->eof_reached = true;
+			close_cursor(conn, cursor_number);
 		}
 		PG_FINALLY(); 
 		{
@@ -6740,4 +6753,7 @@ void cache_create_cursor(ForeignScanState *node)
 	}
 
 	MemoryContextSwitchTo(oldctxt);
+
+	/* Now we consider this cursor (from cache) existed. */
+	fsstate->cursor_exists = true;
 }
