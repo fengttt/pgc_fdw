@@ -52,7 +52,16 @@ int32_t pgcache_get_status(const qry_key_t *qk, int64_t ts, int64_t *to, const c
 	qry_val_t *qv = 0;
 	int qvsz;
 	int qstrsz;
-	
+
+	qstrsz = strlen(qstr); 
+	qvsz = qry_val_sz(qstrsz); 
+	qv = (qry_val_t *) palloc(qvsz);
+	qv->ts = ts;
+	qv->status = QRY_FETCH;
+	qv->txtsz = qstrsz;
+	memcpy(qv->qrytxt, qstr, qstrsz); 
+	qv->qrytxt[qstrsz] = 0;
+
 	/* TODO: Magic 10 */
 	for (int i = 0; i < 10; i++) {
 		ERR_DONE( fdb_database_create_transaction(get_fdb(), &tr), "cannot begin fdb transaction");
@@ -64,39 +73,26 @@ int32_t pgcache_get_status(const qry_key_t *qk, int64_t ts, int64_t *to, const c
 		if (!found || qvbuf->ts + *to < ts) {
 			fdb_future_destroy(f);
 			f = 0;
-			qstrsz = strlen(qstr); 
-			qvsz = qry_val_sz(qstrsz); 
-			qv = (qry_val_t *) palloc(qvsz);
-			qv->ts = ts;
-			qv->status = QRY_FETCH;
-			qv->txtsz = qstrsz;
-			memcpy(qv->qrytxt, qstr, qstrsz); 
-			qv->qrytxt[qstrsz] = 0;
-
 			fdb_transaction_set(tr, (const uint8_t *) qk, sizeof(qry_key_t), (const uint8_t *) qv, qvsz);
 			f = fdb_transaction_commit(tr);
 			err = fdb_wait_error(f);
-			pfree(qv);
-			qv = 0;
 			if (!err) {
 				ret = QRY_FETCH;
 				*to = ts;
+				goto done;
 			}
-		} else if (qv->status >= 0) {
-			ret = qv->status;
-			*to = qv->ts;
+		} else if (qvbuf->status >= 0) {
+			ret = qvbuf->status;
+			*to = qvbuf->ts;
+			goto done;
 		} else {
 			fdb_future_destroy(f);
 			f = fdb_transaction_watch(tr, (const uint8_t *) qk, sizeof(qry_key_t)); 
 			fdb_wait_error(f);
 		}
+		continue;
 
 done:
-		if (qv) {
-			pfree(qv);
-			qv = 0;
-		}
-
 		if (f) {
 			fdb_future_destroy(f);
 			f = 0;
@@ -106,13 +102,14 @@ done:
 			fdb_transaction_destroy(tr);
 			tr = 0;
 		}
-		if (ret != QRY_FAIL) {
-			return ret;
-		}
+		break;
 	}
 
-	elog(LOG, "pgcache_get_status time out ...");
-	return QRY_FAIL;
+	if (qv) {
+		pfree(qv);
+		qv = 0;
+	}
+	return ret;
 }
 
 int32_t pgcache_retrieve(const qry_key_t *qk, int64_t ts, int *ntup, HeapTuple **tups)
