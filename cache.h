@@ -39,10 +39,13 @@
 	} else (void) 0
 
 #define ERR_DONE(err, msg, ...)						\
-	if (err) {										\
-		elog(LOG, PGC_FLINE msg, ##__VA_ARGS__);	\
+if (1) {											\
+	int _local_err = (err);							\
+	if (_local_err) {								\
+		elog(LOG, PGC_FLINE "err %d, " msg, _local_err, ##__VA_ARGS__);	\
 		goto done;									\
-	} else (void) 0
+	}												\
+} else (void) 0
 		
 
 static inline int64_t get_ts() {

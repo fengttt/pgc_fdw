@@ -146,15 +146,20 @@ int32_t pgcache_retrieve(const qry_key_t *qk, int64_t ts, int *ntup, HeapTuple *
 
 	fdb_future_destroy(f);
 	f = fdb_transaction_get_range(tr, 
-			(const uint8_t *)&ka, sizeof(tup_key_t), 1, 0,
-			(const uint8_t *)&kz, sizeof(tup_key_t), 1, 0,
+			(const uint8_t *)&ka, sizeof(tup_key_t), 0, 1,
+			(const uint8_t *)&kz, sizeof(tup_key_t), 0, 1,
 			0, 0, FDB_STREAMING_MODE_WANT_ALL, 1, 0, 0);
 	ERR_DONE( fdb_wait_error(f), "get range failed");
 	ERR_DONE( fdb_future_get_keyvalue_array(f, &outkv, &kvcnt, &found), "retrieve kv array failed.");
 	ERR_DONE( kvcnt != *ntup, "kvcount mismatch! get %d, expecting %d", kvcnt, *ntup);
 
 	for (int i = 0; i < kvcnt; i++) {
-		char *dst = palloc(outkv[i].value_length);
+		char *dst;
+		/* 
+		 * tup_key_t *tk = (tup_key_t *) outkv[i].key;
+		 * elog(LOG, "Reading a key, seq %d, klen %d, vlen %d.", tk->seq, outkv[i].key_length, outkv[i].value_length); 
+		 */
+		dst = (char *) palloc(outkv[i].value_length);
 		memcpy(dst, outkv[i].value, outkv[i].value_length);
 		tups[i] = (HeapTuple) dst;
 		/* FUBAR: unmarshaling */
@@ -193,7 +198,7 @@ int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *t
 
 	char qkbuf[QK_DUMP_SZ];
 	qry_key_dump(qk, qkbuf);
-	elog(LOG, "Populating %d keys, for qk %s.", ntup, qkbuf);
+	/* elog(LOG, "Populating %d keys, for qk %s.", ntup, qkbuf); */
 
 	for (int i = 0; i < 10; i++) {
 		ERR_DONE( fdb_database_create_transaction(get_fdb(), &tr), "cannot begin fdb transaction");
@@ -222,10 +227,12 @@ int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *t
 
 		/* Now put all tuples in */
 		for (int i = 0; i < ntup; i++) {
+			int vlen = HEAPTUPLESIZE + tups[i]->t_len;
 			ka.seq = i + 1;
 			fdb_transaction_set(tr, 
 					(const uint8_t *) &ka, sizeof(ka), 
-					(const uint8_t *) tups[i], HEAPTUPLESIZE + tups[i]->t_len);
+					(const uint8_t *) tups[i], vlen); 
+			/* elog(LOG, "Putting in a key, seq %d, vlen %d.", ka.seq, vlen); */
 		}
 
 		/* Finally update meta */

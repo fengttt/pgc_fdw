@@ -41,8 +41,8 @@ Datum pgc_fdw_cache_info(PG_FUNCTION_ARGS)
 
 		ERR_DONE((err = fdb_database_create_transaction(get_fdb(), &tr)), "cannot begin fdb tx"); 
 		f = fdb_transaction_get_range(tr, 
-				(const uint8_t*) &ka, sizeof(ka), 1, 0,
-				(const uint8_t*) &kz, sizeof(kz), 1, 0,
+				(const uint8_t*) &ka, sizeof(ka), 0, 1,
+				(const uint8_t*) &kz, sizeof(kz), 0, 1,
 				0, 0, FDB_STREAMING_MODE_WANT_ALL, 1, 0, 0);
 		ERR_DONE((err = fdb_wait_error(f)), "fdb get range error");
 		ERR_DONE((err = fdb_future_get_keyvalue_array(f, &kv, &fnctxt->kvCnt, &hasMore)), 

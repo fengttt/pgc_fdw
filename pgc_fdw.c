@@ -6689,6 +6689,9 @@ void cache_create_cursor(ForeignScanState *node)
 
 	if (status >= 0) {
 		status = pgcache_retrieve(&fsstate->cache_qk, to, &fsstate->num_tuples, &fsstate->tuples);
+		if (status >= 0) {
+			fsstate->eof_reached = true;
+		}
 		CHECK_COND(status != QRY_FAIL, "failed to cache query %s", buf.data);
 	}
 		
