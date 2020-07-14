@@ -3,7 +3,7 @@
  * connection.c
  *		  Connection management functions for pgc_fdw
  *
- * Portions Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2012-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/pgc_fdw/connection.c
@@ -12,20 +12,20 @@
  */
 #include "postgres.h"
 
+#include "pgc_fdw.h"
+
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "catalog/pg_user_mapping.h"
-#include "commands/defrem.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "pgc_fdw.h"
-#include "storage/fd.h"
 #include "storage/latch.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
+
 
 /*
  * Connection cache hash table entry
@@ -91,7 +91,7 @@ static bool pgfdw_exec_cleanup_query(PGconn *conn, const char *query,
 									 bool ignore_errors);
 static bool pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
 									 PGresult **result);
-static bool UserMappingPasswordRequired(UserMapping *user);
+
 
 /*
  * Get a PGconn which can be used to execute queries on the remote PostgreSQL
@@ -260,39 +260,10 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 
 		keywords[n] = values[n] = NULL;
 
-		/* verify the set of connection parameters */
+		/* verify connection parameters and make connection */
 		check_conn_params(keywords, values, user);
 
-		/*
-		 * We must obey fd.c's limit on non-virtual file descriptors.  Assume
-		 * that a PGconn represents one long-lived FD.  (Doing this here also
-		 * ensures that VFDs are closed if needed to make room.)
-		 */
-		if (!AcquireExternalFD())
-		{
-#ifndef WIN32					/* can't write #if within ereport() macro */
-			ereport(ERROR,
-					(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
-					 errmsg("could not connect to server \"%s\"",
-							server->servername),
-					 errdetail("There are too many open files on the local server."),
-					 errhint("Raise the server's max_files_per_process and/or \"ulimit -n\" limits.")));
-#else
-			ereport(ERROR,
-					(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
-					 errmsg("could not connect to server \"%s\"",
-							server->servername),
-					 errdetail("There are too many open files on the local server."),
-					 errhint("Raise the server's max_files_per_process setting.")));
-#endif
-		}
-
-		/* OK to make connection */
 		conn = PQconnectdbParams(keywords, values, false);
-
-		if (!conn)
-			ReleaseExternalFD();	/* because the PG_CATCH block won't */
-
 		if (!conn || PQstatus(conn) != CONNECTION_OK)
 			ereport(ERROR,
 					(errcode(ERRCODE_SQLCLIENT_UNABLE_TO_ESTABLISH_SQLCONNECTION),
@@ -303,16 +274,14 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 		/*
 		 * Check that non-superuser has used password to establish connection;
 		 * otherwise, he's piggybacking on the postgres server's user
-		 * identity. See also dblink_security_check() in contrib/dblink and
-		 * check_conn_params.
+		 * identity. See also dblink_security_check() in contrib/dblink.
 		 */
-		if (!superuser_arg(user->userid) && UserMappingPasswordRequired(user) &&
-			!PQconnectionUsedPassword(conn))
+		if (!superuser_arg(user->userid) && !PQconnectionUsedPassword(conn))
 			ereport(ERROR,
 					(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
 					 errmsg("password is required"),
 					 errdetail("Non-superuser cannot connect if the server does not request a password."),
-					 errhint("Target server's authentication method must be changed or password_required=false set in the user mapping attributes.")));
+					 errhint("Target server's authentication method must be changed.")));
 
 		/* Prepare new session for use */
 		configure_remote_session(conn);
@@ -324,10 +293,7 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 	{
 		/* Release PGconn data structure if we managed to create one */
 		if (conn)
-		{
 			PQfinish(conn);
-			ReleaseExternalFD();
-		}
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -345,36 +311,15 @@ disconnect_pg_server(ConnCacheEntry *entry)
 	{
 		PQfinish(entry->conn);
 		entry->conn = NULL;
-		ReleaseExternalFD();
 	}
-}
-
-/*
- * Return true if the password_required is defined and false for this user
- * mapping, otherwise false. The mapping has been pre-validated.
- */
-static bool
-UserMappingPasswordRequired(UserMapping *user)
-{
-	ListCell   *cell;
-
-	foreach(cell, user->options)
-	{
-		DefElem    *def = (DefElem *) lfirst(cell);
-
-		if (strcmp(def->defname, "password_required") == 0)
-			return defGetBoolean(def);
-	}
-
-	return true;
 }
 
 /*
  * For non-superusers, insist that the connstr specify a password.  This
- * prevents a password from being picked up from .pgpass, a service file, the
- * environment, etc.  We don't want the postgres user's passwords,
- * certificates, etc to be accessible to non-superusers.  (See also
- * dblink_connstr_check in contrib/dblink.)
+ * prevents a password from being picked up from .pgpass, a service file,
+ * the environment, etc.  We don't want the postgres user's passwords
+ * to be accessible to non-superusers.  (See also dblink_connstr_check in
+ * contrib/dblink.)
  */
 static void
 check_conn_params(const char **keywords, const char **values, UserMapping *user)
@@ -391,10 +336,6 @@ check_conn_params(const char **keywords, const char **values, UserMapping *user)
 		if (strcmp(keywords[i], "password") == 0 && values[i][0] != '\0')
 			return;
 	}
-
-	/* ok if the superuser explicitly said so at user mapping creation time */
-	if (!UserMappingPasswordRequired(user))
-		return;
 
 	ereport(ERROR,
 			(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
@@ -480,24 +421,17 @@ begin_remote_xact(ConnCacheEntry *entry)
 	/* Start main transaction if we haven't yet */
 	if (entry->xact_depth <= 0)
 	{
-		const char *sql = 0;
+		const char *sql;
+
 		elog(DEBUG3, "starting remote transaction on connection %p",
 			 entry->conn);
 
 		if (IsolationIsSerializable())
 			sql = "START TRANSACTION ISOLATION LEVEL SERIALIZABLE";
-		/* 
-		 * There is no reason to force repeatable read if current level
-		 * is read commited.   If current level is read commited, what
-		 * we should do, is debatable, but let's take the lazy approach
-		 * here.
-		 */
 		else
-			sql = "START TRANSACTION";  /*  ISOLATION LEVEL REPEATABLE READ */
+			sql = "START TRANSACTION"; /*  ISOLATION LEVEL REPEATABLE READ"; */
 		entry->changing_xact_state = true;
-		if (sql) {
-			do_sql_command(entry->conn, sql);
-		}
+		do_sql_command(entry->conn, sql);
 		entry->xact_depth = 1;
 		entry->changing_xact_state = false;
 	}
@@ -699,12 +633,15 @@ pgfdw_report_error(int elevel, PGresult *res, PGconn *conn,
 				 message_context ? errcontext("%s", message_context) : 0,
 				 sql ? errcontext("remote SQL command: %s", sql) : 0));
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		if (clear)
 			PQclear(res);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	if (clear)
+		PQclear(res);
 }
 
 /*
