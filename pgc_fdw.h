@@ -3,21 +3,22 @@
  * pgc_fdw.h
  *		  Foreign-data wrapper for remote PostgreSQL servers
  *
- * Portions Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2012-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/pgc_fdw/pgc_fdw.h
  *
  *-------------------------------------------------------------------------
  */
-#ifndef pgc_fdw_H
-#define pgc_fdw_H
+#ifndef PGC_FDW_H
+#define PGC_FDW_H
 
 #include "foreign/foreign.h"
 #include "lib/stringinfo.h"
-#include "libpq-fe.h"
 #include "nodes/pathnodes.h"
 #include "utils/relcache.h"
+
+#include "libpq-fe.h"
 
 /*
  * FDW-specific planner information kept in RelOptInfo.fdw_private for a
@@ -89,14 +90,11 @@ typedef struct PgFdwRelationInfo
 	int			cache_timeout;
 
 	/*
-	 * Name of the relation, for use while EXPLAINing ForeignScan.  It is used
-	 * for join and upper relations but is set for all relations.  For a base
-	 * relation, this is really just the RT index as a string; we convert that
-	 * while producing EXPLAIN output.  For join and upper relations, the name
-	 * indicates which base foreign tables are included and the join type or
-	 * aggregation type used.
+	 * Name of the relation while EXPLAINing ForeignScan. It is used for join
+	 * relations but is set for all relations. For join relation, the name
+	 * indicates which foreign tables are being joined and the join type used.
 	 */
-	char	   *relation_name;
+	StringInfo	relation_name;
 
 	/* Join information */
 	RelOptInfo *outerrel;
@@ -217,4 +215,4 @@ extern void _PG_fini(void);
 extern void pgcache_init(void);
 extern void pgcache_fini(void);
 
-#endif							/* pgc_fdw_H */
+#endif							/* PGC_FDW_H */

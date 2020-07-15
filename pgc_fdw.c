@@ -3,7 +3,7 @@
  * pgc_fdw.c
  *		  Foreign-data wrapper for remote PostgreSQL servers
  *
- * Portions Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2012-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/pgc_fdw/pgc_fdw.c
@@ -11,8 +11,6 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
-
-#include <limits.h>
 
 #include "access/htup_details.h"
 #include "access/sysattr.h"
@@ -35,7 +33,6 @@
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
-#include "pgc_fdw.h"
 #include "utils/builtins.h"
 #include "utils/float.h"
 #include "utils/guc.h"
@@ -45,9 +42,8 @@
 #include "utils/sampling.h"
 #include "utils/selfuncs.h"
 
+#include "pgc_fdw.h"
 #include "cache.h"
-
-PG_MODULE_MAGIC;
 
 void _PG_init(void)
 {
@@ -58,6 +54,9 @@ void _PG_fini(void)
 {
 	pgcache_fini();
 }
+
+
+PG_MODULE_MAGIC;
 
 /* Default CPU cost to start up a foreign query. */
 #define DEFAULT_FDW_STARTUP_COST	100.0
@@ -175,13 +174,14 @@ typedef struct PgFdwScanState
 
 	int			fetch_size;		/* number of tuples per fetch */
 
+
 	/* pgc cache info */
 	int cache_timeout;
 	qry_key_t cache_qk;
 	/* reuse num_tuple and next_tuple */
 
-} PgFdwScanState;
 
+} PgFdwScanState;
 
 /*
  * Execution state of a foreign insert/update/delete operation.
@@ -440,6 +440,7 @@ static void adjust_foreign_grouping_path_cost(PlannerInfo *root,
 static bool ec_member_matches_foreign(PlannerInfo *root, RelOptInfo *rel,
 									  EquivalenceClass *ec, EquivalenceMember *em,
 									  void *arg);
+
 static void create_cursor(ForeignScanState *node);
 static void cache_create_cursor(ForeignScanState *node);
 
@@ -600,6 +601,9 @@ postgresGetForeignRelSize(PlannerInfo *root,
 	PgFdwRelationInfo *fpinfo;
 	ListCell   *lc;
 	RangeTblEntry *rte = planner_rt_fetch(baserel->relid, root);
+	const char *namespace;
+	const char *relname;
+	const char *refname;
 
 	/*
 	 * We use PgFdwRelationInfo to pass various information to subsequent
@@ -743,11 +747,21 @@ postgresGetForeignRelSize(PlannerInfo *root,
 	}
 
 	/*
-	 * fpinfo->relation_name gets the numeric rangetable index of the foreign
-	 * table RTE.  (If this query gets EXPLAIN'd, we'll convert that to a
-	 * human-readable string at that time.)
+	 * Set the name of relation in fpinfo, while we are constructing it here.
+	 * It will be used to build the string describing the join relation in
+	 * EXPLAIN output. We can't know whether VERBOSE option is specified or
+	 * not, so always schema-qualify the foreign table name.
 	 */
-	fpinfo->relation_name = psprintf("%u", baserel->relid);
+	fpinfo->relation_name = makeStringInfo();
+	namespace = get_namespace_name(get_rel_namespace(foreigntableid));
+	relname = get_rel_name(foreigntableid);
+	refname = rte->eref->aliasname;
+	appendStringInfo(fpinfo->relation_name, "%s.%s",
+					 quote_identifier(namespace),
+					 quote_identifier(relname));
+	if (*refname && strcmp(refname, relname) != 0)
+		appendStringInfo(fpinfo->relation_name, " %s",
+						 quote_identifier(rte->eref->aliasname));
 
 	/* No outer and inner relations. */
 	fpinfo->make_outerrel_subquery = false;
@@ -1391,7 +1405,7 @@ postgresGetForeignPlan(PlannerInfo *root,
 							 makeInteger(fpinfo->cache_timeout));
 	if (IS_JOIN_REL(foreignrel) || IS_UPPER_REL(foreignrel))
 		fdw_private = lappend(fdw_private,
-							  makeString(fpinfo->relation_name));
+							  makeString(fpinfo->relation_name->data));
 
 	/*
 	 * Create the ForeignScan node for the given relation.
@@ -1473,8 +1487,8 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 												 FdwScanPrivateRetrievedAttrs);
 	fsstate->fetch_size = intVal(list_nth(fsplan->fdw_private,
 										  FdwScanPrivateFetchSize));
-	fsstate->cache_timeout = intVal(list_nth(fsplan->fdw_private, FdwScanPrivateCacheTimeout));
 
+	fsstate->cache_timeout = intVal(list_nth(fsplan->fdw_private, FdwScanPrivateCacheTimeout));
 
 	/* Create contexts for batches of tuples and per-tuple temp workspace. */
 	fsstate->batch_cxt = AllocSetContextCreate(estate->es_query_cxt,
@@ -1580,7 +1594,6 @@ postgresReScanForeignScan(ForeignScanState *node)
 		return;
 	}
 
-
 	/*
 	 * If any internal parameters affecting this node have changed, we'd
 	 * better destroy and recreate the cursor.  Otherwise, rewinding it should
@@ -1636,9 +1649,8 @@ postgresEndForeignScan(ForeignScanState *node)
 		return;
 
 	/* Close the cursor if open, to prevent accumulation of cursors */
-	if (fsstate->cursor_exists && fsstate->cache_timeout == 0) {
+	if (fsstate->cursor_exists && fsstate->cache_timeout == 0)
 		close_cursor(fsstate->conn, fsstate->cursor_number);
-	}
 
 	/* Release remote connection */
 	ReleaseConnection(fsstate->conn);
@@ -2556,92 +2568,20 @@ postgresEndDirectModify(ForeignScanState *node)
 static void
 postgresExplainForeignScan(ForeignScanState *node, ExplainState *es)
 {
-	ForeignScan *plan = castNode(ForeignScan, node->ss.ps.plan);
-	List	   *fdw_private = plan->fdw_private;
+	List	   *fdw_private;
+	char	   *sql;
+	char	   *relations;
+
+	fdw_private = ((ForeignScan *) node->ss.ps.plan)->fdw_private;
 
 	/*
-	 * Identify foreign scans that are really joins or upper relations.  The
-	 * input looks something like "(1) LEFT JOIN (2)", and we must replace the
-	 * digit string(s), which are RT indexes, with the correct relation names.
-	 * We do that here, not when the plan is created, because we can't know
-	 * what aliases ruleutils.c will assign at plan creation time.
+	 * Add names of relation handled by the foreign scan when the scan is a
+	 * join
 	 */
 	if (list_length(fdw_private) > FdwScanPrivateRelations)
 	{
-		StringInfo	relations;
-		char	   *rawrelations;
-		char	   *ptr;
-		int			minrti,
-					rtoffset;
-
-		rawrelations = strVal(list_nth(fdw_private, FdwScanPrivateRelations));
-
-		/*
-		 * A difficulty with using a string representation of RT indexes is
-		 * that setrefs.c won't update the string when flattening the
-		 * rangetable.  To find out what rtoffset was applied, identify the
-		 * minimum RT index appearing in the string and compare it to the
-		 * minimum member of plan->fs_relids.  (We expect all the relids in
-		 * the join will have been offset by the same amount; the Asserts
-		 * below should catch it if that ever changes.)
-		 */
-		minrti = INT_MAX;
-		ptr = rawrelations;
-		while (*ptr)
-		{
-			if (isdigit((unsigned char) *ptr))
-			{
-				int			rti = strtol(ptr, &ptr, 10);
-
-				if (rti < minrti)
-					minrti = rti;
-			}
-			else
-				ptr++;
-		}
-		rtoffset = bms_next_member(plan->fs_relids, -1) - minrti;
-
-		/* Now we can translate the string */
-		relations = makeStringInfo();
-		ptr = rawrelations;
-		while (*ptr)
-		{
-			if (isdigit((unsigned char) *ptr))
-			{
-				int			rti = strtol(ptr, &ptr, 10);
-				RangeTblEntry *rte;
-				char	   *relname;
-				char	   *refname;
-
-				rti += rtoffset;
-				Assert(bms_is_member(rti, plan->fs_relids));
-				rte = rt_fetch(rti, es->rtable);
-				Assert(rte->rtekind == RTE_RELATION);
-				/* This logic should agree with explain.c's ExplainTargetRel */
-				relname = get_rel_name(rte->relid);
-				if (es->verbose)
-				{
-					char	   *namespace;
-
-					namespace = get_namespace_name(get_rel_namespace(rte->relid));
-					appendStringInfo(relations, "%s.%s",
-									 quote_identifier(namespace),
-									 quote_identifier(relname));
-				}
-				else
-					appendStringInfo(relations, "%s",
-									 quote_identifier(relname));
-				refname = (char *) list_nth(es->rtable_names, rti - 1);
-				if (refname == NULL)
-					refname = rte->eref->aliasname;
-				if (strcmp(refname, relname) != 0)
-					appendStringInfo(relations, " %s",
-									 quote_identifier(refname));
-			}
-			else
-				appendStringInfoChar(relations, *ptr++);
-		}
-		ExplainPropertyText("Relations", relations->data, es);
+		relations = strVal(list_nth(fdw_private, FdwScanPrivateRelations));
+		ExplainPropertyText("Relations", relations, es);
 	}
 
 	/*
@@ -2649,8 +2589,6 @@ postgresExplainForeignScan(ForeignScanState *node, ExplainState *es)
 	 */
 	if (es->verbose)
 	{
-		char	   *sql;
-
 		sql = strVal(list_nth(fdw_private, FdwScanPrivateSelectSql));
 		ExplainPropertyText("Remote SQL", sql, es);
 	}
@@ -2768,7 +2706,7 @@ estimate_path_cost_size(PlannerInfo *root,
 		 * baserestrictinfo plus any extra join_conds relevant to this
 		 * particular path.
 		 */
-		remote_conds = list_concat(remote_param_join_conds,
+		remote_conds = list_concat(list_copy(remote_param_join_conds),
 								   fpinfo->remote_conds);
 
 		/*
@@ -2895,7 +2833,7 @@ estimate_path_cost_size(PlannerInfo *root,
 
 			/*
 			 * Back into an estimate of the number of retrieved rows.  Just in
-			 * case this is nuts, clamp to at most nrows.
+			 * case this is nuts, clamp to at most nrow.
 			 */
 			retrieved_rows = clamp_row_est(rows / fpinfo->local_conds_sel);
 			retrieved_rows = Min(retrieved_rows, nrows);
@@ -3257,11 +3195,15 @@ get_remote_estimate(const char *sql, PGconn *conn,
 				   startup_cost, total_cost, rows, width);
 		if (n != 4)
 			elog(ERROR, "could not interpret EXPLAIN output: \"%s\"", line);
+
+		PQclear(res);
+		res = NULL;
 	}
-	PG_CATCH(); 
+	PG_CATCH();
 	{
 		if (res)
 			PQclear(res);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 }
@@ -3383,6 +3325,7 @@ create_cursor(ForeignScanState *node)
 		MemoryContextSwitchTo(oldcontext);
 	}
 
+
 	if (fsstate->cache_timeout > 0) {
 		return cache_create_cursor(node);
 	}
@@ -3485,11 +3428,15 @@ fetch_more_data(ForeignScanState *node)
 
 		/* Must be EOF if we didn't get as many tuples as we asked for. */
 		fsstate->eof_reached = (numrows < fsstate->fetch_size);
+
+		PQclear(res);
+		res = NULL;
 	}
-	PG_CATCH(); 
+	PG_CATCH();
 	{
 		if (res)
 			PQclear(res);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
@@ -4502,11 +4449,15 @@ postgresAnalyzeForeignTable(Relation relation,
 		if (PQntuples(res) != 1 || PQnfields(res) != 1)
 			elog(ERROR, "unexpected result from deparseAnalyzeSizeSql query");
 		*totalpages = strtoul(PQgetvalue(res, 0, 0), NULL, 10);
+
+		PQclear(res);
+		res = NULL;
 	}
-	PG_CATCH(); 
+	PG_CATCH();
 	{
 		if (res)
 			PQclear(res);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
@@ -4583,51 +4534,20 @@ postgresAcquireSampleRowsFunc(Relation relation, int elevel,
 	/* In what follows, do not risk leaking any PGresults. */
 	PG_TRY();
 	{
-		char		fetch_sql[64];
-		int			fetch_size;
-		ListCell   *lc;
-
 		res = pgfdw_exec_query(conn, sql.data);
 		if (PQresultStatus(res) != PGRES_COMMAND_OK)
 			pgfdw_report_error(ERROR, res, conn, false, sql.data);
 		PQclear(res);
 		res = NULL;
 
-		/*
-		 * Determine the fetch size.  The default is arbitrary, but shouldn't
-		 * be enormous.
-		 */
-		fetch_size = 100;
-		foreach(lc, server->options)
-		{
-			DefElem    *def = (DefElem *) lfirst(lc);
-
-			if (strcmp(def->defname, "fetch_size") == 0)
-			{
-				fetch_size = strtol(defGetString(def), NULL, 10);
-				break;
-			}
-		}
-		foreach(lc, table->options)
-		{
-			DefElem    *def = (DefElem *) lfirst(lc);
-
-			if (strcmp(def->defname, "fetch_size") == 0)
-			{
-				fetch_size = strtol(defGetString(def), NULL, 10);
-				break;
-			}
-		}
-
-		/* Construct command to fetch rows from remote. */
-		snprintf(fetch_sql, sizeof(fetch_sql), "FETCH %d FROM c%u",
-				 fetch_size, cursor_number);
-
 		/* Retrieve and process rows a batch at a time. */
 		for (;;)
 		{
+			char		fetch_sql[64];
+			int			fetch_size;
 			int			numrows;
 			int			i;
+			ListCell   *lc;
 
 			/* Allow users to cancel long query */
 			CHECK_FOR_INTERRUPTS();
@@ -4638,7 +4558,33 @@ postgresAcquireSampleRowsFunc(Relation relation, int elevel,
 			 * then just adjust rowstoskip and samplerows appropriately.
 			 */
 
+			/* The fetch size is arbitrary, but shouldn't be enormous. */
+			fetch_size = 100;
+			foreach(lc, server->options)
+			{
+				DefElem    *def = (DefElem *) lfirst(lc);
+
+				if (strcmp(def->defname, "fetch_size") == 0)
+				{
+					fetch_size = strtol(defGetString(def), NULL, 10);
+					break;
+				}
+			}
+			foreach(lc, table->options)
+			{
+				DefElem    *def = (DefElem *) lfirst(lc);
+
+				if (strcmp(def->defname, "fetch_size") == 0)
+				{
+					fetch_size = strtol(defGetString(def), NULL, 10);
+					break;
+				}
+			}
+
 			/* Fetch some rows */
+			snprintf(fetch_sql, sizeof(fetch_sql), "FETCH %d FROM c%u",
+					 fetch_size, cursor_number);
+
 			res = pgfdw_exec_query(conn, fetch_sql);
 			/* On error, report the original query, not the FETCH. */
 			if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -5019,11 +4965,16 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 
 			commands = lappend(commands, pstrdup(buf.data));
 		}
+
+		/* Clean up */
+		PQclear(res);
+		res = NULL;
 	}
-	PG_CATCH(); 
+	PG_CATCH();
 	{
 		if (res)
 			PQclear(res);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
@@ -5190,23 +5141,23 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 	{
 		case JOIN_INNER:
 			fpinfo->remote_conds = list_concat(fpinfo->remote_conds,
-											   fpinfo_i->remote_conds);
+											   list_copy(fpinfo_i->remote_conds));
 			fpinfo->remote_conds = list_concat(fpinfo->remote_conds,
-											   fpinfo_o->remote_conds);
+											   list_copy(fpinfo_o->remote_conds));
 			break;
 
 		case JOIN_LEFT:
 			fpinfo->joinclauses = list_concat(fpinfo->joinclauses,
-											  fpinfo_i->remote_conds);
+											  list_copy(fpinfo_i->remote_conds));
 			fpinfo->remote_conds = list_concat(fpinfo->remote_conds,
-											   fpinfo_o->remote_conds);
+											   list_copy(fpinfo_o->remote_conds));
 			break;
 
 		case JOIN_RIGHT:
 			fpinfo->joinclauses = list_concat(fpinfo->joinclauses,
-											  fpinfo_o->remote_conds);
+											  list_copy(fpinfo_o->remote_conds));
 			fpinfo->remote_conds = list_concat(fpinfo->remote_conds,
-											   fpinfo_i->remote_conds);
+											   list_copy(fpinfo_i->remote_conds));
 			break;
 
 		case JOIN_FULL:
@@ -5277,14 +5228,13 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 
 	/*
 	 * Set the string describing this join relation to be used in EXPLAIN
-	 * output of corresponding ForeignScan.  Note that the decoration we add
-	 * to the base relation names mustn't include any digits, or it'll confuse
-	 * postgresExplainForeignScan.
+	 * output of corresponding ForeignScan.
 	 */
-	fpinfo->relation_name = psprintf("(%s) %s JOIN (%s)",
-									 fpinfo_o->relation_name,
-									 get_jointype_name(fpinfo->jointype),
-									 fpinfo_i->relation_name);
+	fpinfo->relation_name = makeStringInfo();
+	appendStringInfo(fpinfo->relation_name, "(%s) %s JOIN (%s)",
+					 fpinfo_o->relation_name->data,
+					 get_jointype_name(fpinfo->jointype),
+					 fpinfo_i->relation_name->data);
 
 	/*
 	 * Set the relation index.  This is defined as the position of this
@@ -5386,6 +5336,7 @@ apply_server_options(PgFdwRelationInfo *fpinfo)
 				ExtractExtensionList(defGetString(def), false);
 		else if (strcmp(def->defname, "fetch_size") == 0)
 			fpinfo->fetch_size = strtol(defGetString(def), NULL, 10);
+
 		else if (strcmp(def->defname, "cache_timeout") == 0)
 			fpinfo->cache_timeout = strtol(defGetString(def), NULL, 10);
 	}
@@ -5409,6 +5360,7 @@ apply_table_options(PgFdwRelationInfo *fpinfo)
 			fpinfo->use_remote_estimate = defGetBoolean(def);
 		else if (strcmp(def->defname, "fetch_size") == 0)
 			fpinfo->fetch_size = strtol(defGetString(def), NULL, 10);
+
 		else if (strcmp(def->defname, "cache_timeout") == 0) 
 			fpinfo->cache_timeout = strtol(defGetString(def), NULL, 10);
 	}
@@ -5445,6 +5397,7 @@ merge_fdw_options(PgFdwRelationInfo *fpinfo,
 	fpinfo->shippable_extensions = fpinfo_o->shippable_extensions;
 	fpinfo->use_remote_estimate = fpinfo_o->use_remote_estimate;
 	fpinfo->fetch_size = fpinfo_o->fetch_size;
+
 	fpinfo->cache_timeout = fpinfo_o->cache_timeout;
 
 	/* Merge the table level options from either side of the join. */
@@ -5838,12 +5791,11 @@ foreign_grouping_ok(PlannerInfo *root, RelOptInfo *grouped_rel,
 
 	/*
 	 * Set the string describing this grouped relation to be used in EXPLAIN
-	 * output of corresponding ForeignScan.  Note that the decoration we add
-	 * to the base relation name mustn't include any digits, or it'll confuse
-	 * postgresExplainForeignScan.
+	 * output of corresponding ForeignScan.
 	 */
-	fpinfo->relation_name = psprintf("Aggregate on (%s)",
-									 ofpinfo->relation_name);
+	fpinfo->relation_name = makeStringInfo();
+	appendStringInfo(fpinfo->relation_name, "Aggregate on (%s)",
+					 ofpinfo->relation_name->data);
 
 	return true;
 }
@@ -6572,6 +6524,35 @@ conversion_error_callback(void *arg)
 		else if (attname)
 			errcontext("column \"%s\" of foreign table \"%s\"", attname, relname);
 	}
+}
+
+/*
+ * Find an equivalence class member expression, all of whose Vars, come from
+ * the indicated relation.
+ */
+Expr *
+find_em_expr_for_rel(EquivalenceClass *ec, RelOptInfo *rel)
+{
+	ListCell   *lc_em;
+
+	foreach(lc_em, ec->ec_members)
+	{
+		EquivalenceMember *em = lfirst(lc_em);
+
+		if (bms_is_subset(em->em_relids, rel->relids) &&
+			!bms_is_empty(em->em_relids))
+		{
+			/*
+			 * If there is more than one equivalence member whose Vars are
+			 * taken entirely from this relation, we'll be content to choose
+			 * any one of those.
+			 */
+			return em->em_expr;
+		}
+	}
+
+	/* We didn't find any suitable equivalence class expression */
+	return NULL;
 }
 
 /*
