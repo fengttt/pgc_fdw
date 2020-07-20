@@ -6648,9 +6648,12 @@ void cache_create_cursor(ForeignScanState *node)
 	MemoryContextReset(fsstate->batch_cxt);
 	oldctxt = MemoryContextSwitchTo(fsstate->batch_cxt);
 
-	initStringInfo(&buf);
-	appendStringInfo(&buf, "Dbid: %d Relid: %d, Query: %s", 
-			MyDatabaseId, fsstate->rel->rd_id, fsstate->query);
+	/* 
+	 * XXX:
+	 * We should have put in a uniqifier for foreign server and user mapping (at least foreign server) 
+	 */
+	initStringInfo(&buf);	
+	appendStringInfo(&buf, "Dbid: %d, Query: %s", MyDatabaseId, fsstate->query);
 
 	for (int i = 0; i < numParams; i++) {
 		if (values[i] == NULL) {
