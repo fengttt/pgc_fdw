@@ -85,6 +85,9 @@ int32_t pgcache_get_status(const qry_key_t *qk, int64_t ts, int64_t *to, const c
 			ret = qvbuf->status;
 			*to = qvbuf->ts;
 			goto done;
+		} else if (qvbuf->status == QRY_FDB_LIMIT_REACHED) {
+			ret = qvbuf->status;
+			goto done;
 		} else {
 			fdb_future_destroy(f);
 			f = fdb_transaction_watch(tr, (const uint8_t *) qk, sizeof(qry_key_t)); 
