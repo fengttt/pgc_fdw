@@ -6698,7 +6698,7 @@ void cache_create_cursor(ForeignScanState *node)
 		CHECK_COND(status != QRY_FAIL, "failed to cache query %s", buf.data);
 	}
 		
-	if (status == QRY_FETCH) {
+	if (status == QRY_FETCH || status == QRY_FDB_LIMIT_REACHED) {
 		char sql[64];
 		cursor_number = GetCursorNumber(conn);
 		snprintf(sql, sizeof(sql), "FETCH ALL FROM C%u", cursor_number);
@@ -6751,11 +6751,13 @@ void cache_create_cursor(ForeignScanState *node)
 		}
 		PG_END_TRY();
 
-		/* 
-		 * we don't care about return status, if it fail, we will mark it in cache metadata
-		 * but the data we fectched this time is still good.
-		 */
-		pgcache_populate(&fsstate->cache_qk, to, fsstate->num_tuples, fsstate->tuples);
+		if (status == QRY_FETCH) {
+			/* 
+		 	 * we don't care about return status, if it fail, we will mark it in cache metadata
+		 	 * but the data we fectched this time is still good.
+		 	 */
+			pgcache_populate(&fsstate->cache_qk, to, fsstate->num_tuples, fsstate->tuples);
+		}
 	}
 
 	MemoryContextSwitchTo(oldctxt);

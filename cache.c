@@ -181,6 +181,37 @@ done:
 	return ret;
 }
 
+static int32_t pgcache_set_qry(const qry_key_t *qk, const uint8_t *qv, int qvsz)
+{
+	FDBTransaction *tr = 0;
+	FDBFuture *f = 0;
+	int32_t ret = QRY_FAIL;
+	fdb_error_t err;
+
+	ERR_DONE(fdb_database_create_transaction(get_fdb(), &tr), "cannot begin fdb transaction");
+	f = fdb_transaction_get(tr, (const uint8_t *)qk, sizeof(qry_key_t), 0);
+	ERR_DONE(fdb_wait_error(f), "fdb future failed");
+
+	fdb_transaction_set(tr, (const uint8_t *)qk, sizeof(qry_key_t), qv, qvsz);
+
+	f = fdb_transaction_commit(tr);
+	err = fdb_wait_error(f);
+	ERR_DONE(err, "cache populate transaction error.");
+	ret = 0;
+
+done:
+	if (f) {
+		fdb_future_destroy(f);
+		f = 0;
+	}
+
+	if (tr) {
+		fdb_transaction_destroy(tr);
+		tr = 0;
+	}
+	return ret;
+}
+
 int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *tups)
 {
 	FDBTransaction *tr = 0;
@@ -196,11 +227,17 @@ int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *t
 	tup_key_t ka;
 	tup_key_t kz;
 
+	int wszNb = 0;
+	/* FoundationDB funny transaction limit -- 10MB.  We cap it to 5MB */
+	const int wszLimit = 5000000; 
+
 	char qkbuf[QK_DUMP_SZ];
 	qry_key_dump(qk, qkbuf);
 	/* elog(LOG, "Populating %d keys, for qk %s.", ntup, qkbuf); */
 
 	for (int i = 0; i < 10; i++) {
+		wszNb = 0;
+
 		ERR_DONE( fdb_database_create_transaction(get_fdb(), &tr), "cannot begin fdb transaction");
 		f = fdb_transaction_get(tr, (const uint8_t *) qk, sizeof(qry_key_t), 0);
 		ERR_DONE( fdb_wait_error(f), "fdb future failed");
@@ -233,6 +270,12 @@ int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *t
 					(const uint8_t *) &ka, sizeof(ka), 
 					(const uint8_t *) tups[i], vlen); 
 			/* elog(LOG, "Putting in a key, seq %d, vlen %d.", ka.seq, vlen); */
+
+			wszNb += sizeof(ka) + vlen;
+			if (wszNb > wszLimit) {
+				ret = QRY_FDB_LIMIT_REACHED;
+				goto done;
+			}
 		}
 
 		/* Finally update meta */
@@ -246,11 +289,7 @@ int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *t
 		ret = ntup;
 
 done:
-		if (qv) {
-			pfree(qv);
-			qv = 0;
-		}
-
+	
 		if (f) {
 			fdb_future_destroy(f);
 			f = 0;
@@ -260,11 +299,22 @@ done:
 			fdb_transaction_destroy(tr);
 			tr = 0;
 		}
+
 		if (ret != QRY_FAIL) {
-			return ret;
+			break;
+		} 
+	}
+
+	while (ret == QRY_FDB_LIMIT_REACHED) {
+		qv->status = QRY_FDB_LIMIT_REACHED;
+		if (pgcache_set_qry(qk, (const uint8_t *) qv, qvsz) >= 0) {
+			ret = QRY_FAIL_NO_RETRY;
 		}
 	}
 
-	return QRY_FAIL;
+	if (qv) {
+		pfree(qv);
+		qv = 0;
+	}
+	return ret;
 }
-
