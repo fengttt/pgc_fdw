@@ -29,7 +29,17 @@ value is 3600.    Set it to 0 to disable caching.
 CREATE FOREIGN TABLE foreign_table (
 		id int NOT NULL,
 		data text
-) SERVER foreign_server OPTIONS(shcema_name 'foo', table_name 'bar', cache_time = 3600);
+) SERVER foreign_server OPTIONS(shcema_name 'foo', table_name 'bar', cache_timeout '3600');
+```
+
+To inspect the cache,
+```
+select * from pgc_fdw_cache_info();
+```
+
+To invalidate a cache entry,
+```
+select pgc_fdw_invalide('the-40-char-hash-code');
 ```
 
 
