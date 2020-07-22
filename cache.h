@@ -57,7 +57,8 @@ FDBDatabase *get_fdb(void);
 
 static const int32_t QRY_FETCH = -1; 
 static const int32_t QRY_FAIL = -2;
-static const int32_t QRY_FAIL_NO_RETRY = -3;
+static const int32_t QRY_FDB_LIMIT_REACHED = -3;
+static const int32_t QRY_FAIL_NO_RETRY = -4;
 
 typedef struct qry_key_t {
 	char PREFIX[4];
