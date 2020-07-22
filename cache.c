@@ -274,6 +274,7 @@ int32_t pgcache_populate(const qry_key_t *qk, int64_t ts, int ntup, HeapTuple *t
 			wszNb += sizeof(ka) + vlen;
 			if (wszNb > wszLimit) {
 				ret = QRY_FDB_LIMIT_REACHED;
+				elog(LOG, "FoundattionDB TX limit reached after %d out of %d tuples.", i, ntup); 
 				goto done;
 			}
 		}
