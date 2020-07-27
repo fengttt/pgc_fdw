@@ -158,6 +158,8 @@ static void deparseRelabelType(RelabelType *node, deparse_expr_cxt *context);
 static void deparseBoolExpr(BoolExpr *node, deparse_expr_cxt *context);
 static void deparseNullTest(NullTest *node, deparse_expr_cxt *context);
 static void deparseArrayExpr(ArrayExpr *node, deparse_expr_cxt *context);
+static void deparseCaseExpr(CaseExpr *node, deparse_expr_cxt *context);
+static void deparseCaseTestExpr(CaseTestExpr *node, deparse_expr_cxt *context);
 static void printRemoteParam(int paramindex, Oid paramtype, int32 paramtypmod,
 							 deparse_expr_cxt *context);
 static void printRemotePlaceholder(Oid paramtype, int32 paramtypmod,
@@ -790,8 +792,57 @@ foreign_expr_walker(Node *node,
 					state = FDW_COLLATE_UNSAFE;
 			}
 			break;
-		default:
 
+		case T_CaseExpr:
+			{
+				ListCell *lc;		
+				CaseExpr *expr = (CaseExpr *) node;
+				if (!foreign_expr_walker((Node *) expr->arg, glob_cxt, &inner_cxt))
+				{
+					return false;
+				}
+				
+				foreach (lc, expr->args) {
+					CaseWhen *when = lfirst_node(CaseWhen, lc);
+					if (!foreign_expr_walker((Node*) when->expr, glob_cxt, &inner_cxt)) {
+						return false;
+					}
+					if (!foreign_expr_walker((Node*) when->result, glob_cxt, &inner_cxt)) {
+						return false;
+					}
+				}
+				
+				if (!foreign_expr_walker((Node *) expr->defresult, glob_cxt, &inner_cxt))
+				{
+					return false;
+				}
+				
+				collation = expr->casecollid;
+				if (collation == InvalidOid)
+					state = FDW_COLLATE_NONE;
+				else if (inner_cxt.state == FDW_COLLATE_SAFE &&
+						 collation == inner_cxt.collation)
+					state = FDW_COLLATE_SAFE;
+				else if (collation == DEFAULT_COLLATION_OID)
+					state = FDW_COLLATE_NONE;
+				else
+					state = FDW_COLLATE_UNSAFE;
+			}
+			break;
+			
+		case T_CaseTestExpr:
+			{
+				CaseTestExpr   *t = (CaseTestExpr *) node;
+				collation = t->collation;
+				if (collation == InvalidOid ||
+					collation == DEFAULT_COLLATION_OID)
+					state = FDW_COLLATE_NONE;
+				else
+					state = FDW_COLLATE_UNSAFE;
+			}
+			break;
+	
+		default:
 			/*
 			 * If it's anything else, assume it's unsafe.  This list can be
 			 * expanded later, but don't forget to add deparse support below.
@@ -2370,6 +2421,12 @@ deparseExpr(Expr *node, deparse_expr_cxt *context)
 		case T_Aggref:
 			deparseAggref((Aggref *) node, context);
 			break;
+		case T_CaseExpr:
+			deparseCaseExpr((CaseExpr *)node, context);
+			break;
+		case T_CaseTestExpr:
+			deparseCaseTestExpr((CaseTestExpr *)node, context);
+			break;
 		default:
 			elog(ERROR, "unsupported expression type for deparse: %d",
 				 (int) nodeTag(node));
@@ -2707,6 +2764,7 @@ deparseOpExpr(OpExpr *node, deparse_expr_cxt *context)
 	Form_pg_operator form;
 	char		oprkind;
 	ListCell   *arg;
+	bool emitOp = true;
 
 	/* Retrieve information about the operator from system catalog. */
 	tuple = SearchSysCache1(OPEROID, ObjectIdGetDatum(node->opno));
@@ -2727,12 +2785,17 @@ deparseOpExpr(OpExpr *node, deparse_expr_cxt *context)
 	if (oprkind == 'r' || oprkind == 'b')
 	{
 		arg = list_head(node->args);
-		deparseExpr(lfirst(arg), context);
-		appendStringInfoChar(buf, ' ');
+		if (IsA(lfirst(arg), CaseTestExpr)) {
+			emitOp = false;
+		} else {
+			deparseExpr(lfirst(arg), context);
+			appendStringInfoChar(buf, ' ');
+		}
 	}
 
 	/* Deparse operator name. */
-	deparseOperatorName(buf, form);
+	if (emitOp)
+		deparseOperatorName(buf, form);
 
 	/* Deparse right operand. */
 	if (oprkind == 'l' || oprkind == 'b')
@@ -2791,6 +2854,38 @@ deparseDistinctExpr(DistinctExpr *node, deparse_expr_cxt *context)
 	deparseExpr(lsecond(node->args), context);
 	appendStringInfoChar(buf, ')');
 }
+
+/* 
+ * Deparse CASE WHEN THEN ELSE
+ */
+static void deparseCaseExpr(CaseExpr* node, deparse_expr_cxt *context)
+{
+	StringInfo buf = context->buf;
+	ListCell *lc;	
+	appendStringInfoString(buf, " CASE ");
+	if (node->arg) {
+		deparseExpr(node->arg, context);
+	}
+
+	foreach(lc, node->args) {
+		CaseWhen *when = lfirst_node(CaseWhen, lc);
+		appendStringInfoString(buf, " WHEN ");
+		deparseExpr(when->expr, context);
+		appendStringInfoString(buf, " THEN ");
+		deparseExpr(when->result, context);
+	}
+
+	if (node->defresult) {
+		appendStringInfoString(buf, " ELSE ");
+		deparseExpr(node->defresult, context);
+	}
+	appendStringInfoString(buf, " END ");
+}
+ 
+ static void deparseCaseTestExpr(CaseTestExpr *node, deparse_expr_cxt *context) 
+ {
+	// no op? 
+ }
 
 /*
  * Deparse given ScalarArrayOpExpr expression.  To avoid problems
