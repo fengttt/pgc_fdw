@@ -7,8 +7,8 @@
 #include "cache.h"
 #include <pthread.h>
 
-static bool fdb_inited;
-static FDBDatabase *fdb;
+static bool fdb_inited = 0;
+static FDBDatabase *fdb = 0;
 static pthread_t pth;
 
 FDBDatabase *get_fdb() {
@@ -38,6 +38,7 @@ void pgcache_fini()
 	CHECK_ERR(fdb_stop_network(), "Cannot stop fdb network.");
 	CHECK_ERR(pthread_join(pth, NULL), "Cannot join fdb network thread");
 	fdb = 0;
+	fdw_inited = 0;
 }
 
 int32_t pgcache_get_status(const qry_key_t *qk, int64_t ts, int64_t *to, const char* qstr) 
